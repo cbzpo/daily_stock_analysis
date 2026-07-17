@@ -108,14 +108,14 @@ def normalize_stock_code(stock_code: str) -> str:
     if upper.startswith(('SH', 'SZ', 'SS')) and not upper.startswith(('SH.', 'SZ.', 'SS.')):
         candidate = code[2:]
         # Only strip if the remainder looks like a valid numeric code
-        if candidate.isdigit() and len(candidate) in (5, 6):
-            return candidate
+        if candidate.isdigit() and len(candidate) <= 6:
+            return candidate.zfill(6)
 
     # Strip dotted SH/SZ/SS prefix (e.g. SH.600519 -> 600519)
     if upper.startswith(('SH.', 'SZ.', 'SS.')):
         candidate = code[3:]
-        if candidate.isdigit() and len(candidate) in (5, 6):
-            return candidate
+        if candidate.isdigit() and len(candidate) <= 6:
+            return candidate.zfill(6)
 
     # Strip BJ prefix (e.g. BJ920748 -> 920748)
     if upper.startswith('BJ') and not upper.startswith('BJ.'):
@@ -145,6 +145,10 @@ def normalize_stock_code(stock_code: str) -> str:
             return suffix
         if suffix.upper() in ('SH', 'SZ', 'SS', 'BJ') and base.isdigit():
             return base
+
+    # Pad A-share codes to 6 digits (e.g. '2594' -> '002594', '920' -> '000920')
+    if code.isdigit() and 1 <= len(code) <= 5:
+        return code.zfill(6)
 
     return code
 
@@ -624,6 +628,7 @@ class DataFetcherManager:
         "LongbridgeFetcher": {"hk", "us"},
         "FinnhubFetcher": {"us"},
         "AlphaVantageFetcher": {"us"},
+        "SinaFetcher": {"cn"},
     }
     _daily_source_health = CircuitBreaker(failure_threshold=3, cooldown_seconds=300.0)
     _CONCEPT_RANKINGS_CACHE_TTL_SECONDS = 300.0
@@ -1150,6 +1155,7 @@ class DataFetcherManager:
           2. PytdxFetcher (Priority 2) - 通达信
           3. BaostockFetcher (Priority 3)
           4. YfinanceFetcher (Priority 4)
+          5. SinaFetcher (Priority 5) - 新浪财经
         """
         from src.config import get_config
         from .efinance_fetcher import EfinanceFetcher
@@ -1161,6 +1167,7 @@ class DataFetcherManager:
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
         from .longbridge_fetcher import LongbridgeFetcher
+        from .sina_fetcher import SinaFetcher
         config = get_config()
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
@@ -1169,6 +1176,7 @@ class DataFetcherManager:
         pytdx = PytdxFetcher()      # 通达信数据源（可配 PYTDX_HOST/PYTDX_PORT）
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
+        sina = SinaFetcher()         # 新浪财经数据源
         optional_fetchers: List[BaseFetcher] = []
 
         tushare_token = (getattr(config, "tushare_token", None) or "").strip()
@@ -1220,6 +1228,7 @@ class DataFetcherManager:
                 pytdx,
                 baostock,
                 yfinance,
+                sina,
                 *optional_fetchers,
             ]
 
@@ -3164,6 +3173,7 @@ class DataFetcherManager:
             "capital_flow": {},
             "dragon_tiger": {},
             "boards": {},
+            "northbound": {},
             "coverage": {},
             "source_chain": [],
             "errors": [],
@@ -3368,6 +3378,28 @@ class DataFetcherManager:
                 budget_seconds=min(fetch_timeout, remaining_seconds),
             )
 
+        # 北向资金（A 股专用）
+        if not is_etf and getattr(config, "enable_northbound", True):
+            northbound_budget = min(fetch_timeout, remaining_seconds)
+            northbound_start = time.time()
+            result_ctx["northbound"] = self.get_northbound_context(
+                budget_seconds=northbound_budget,
+            )
+            _consume_budget(int((time.time() - northbound_start) * 1000))
+
+        # 估值百分位（A 股专用）
+        if not is_etf and getattr(config, "enable_valuation_percentile", True):
+            vp_budget = min(fetch_timeout, remaining_seconds)
+            vp_start = time.time()
+            vp_data = self.get_valuation_percentile_context(
+                stock_code,
+                budget_seconds=vp_budget,
+            )
+            _consume_budget(int((time.time() - vp_start) * 1000))
+            # 将估值百分位数据合并到 valuation 块中
+            if vp_data and vp_data.get("status") == "ok":
+                result_ctx["valuation"]["percentile"] = vp_data
+
         block_statuses = {
             "valuation": result_ctx["valuation"].get("status", "not_supported"),
             "growth": result_ctx["growth"].get("status", "not_supported"),
@@ -3376,6 +3408,7 @@ class DataFetcherManager:
             "capital_flow": result_ctx["capital_flow"].get("status", "not_supported"),
             "dragon_tiger": result_ctx["dragon_tiger"].get("status", "not_supported"),
             "boards": result_ctx["boards"].get("status", "not_supported"),
+            "northbound": result_ctx["northbound"].get("status", "not_supported"),
         }
         result_ctx["coverage"] = block_statuses
         for block in (
@@ -3386,6 +3419,7 @@ class DataFetcherManager:
             "capital_flow",
             "dragon_tiger",
             "boards",
+            "northbound",
         ):
             result_ctx["errors"].extend(result_ctx[block].get("errors", []))
             result_ctx["source_chain"].extend(result_ctx[block].get("source_chain", []))
@@ -3582,6 +3616,122 @@ class DataFetcherManager:
             {},
             [{"provider": "sector_rankings", "result": "failed", "duration_ms": cost_ms}],
             [err or "boards failed"],
+        )
+
+    def get_northbound_context(self, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
+        """北向资金块（fail-open）。"""
+        from src.config import get_config
+
+        config = get_config()
+        timeout = float(budget_seconds if budget_seconds is not None else config.fundamental_fetch_timeout_seconds)
+        if timeout <= 0:
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "northbound", "result": "failed", "duration_ms": 0}],
+                ["fundamental stage timeout"],
+            )
+        payload, err, cost_ms = self._run_with_retry(
+            lambda: self._fundamental_adapter.get_northbound_flow(),
+            timeout,
+            "northbound",
+        )
+        if not isinstance(payload, dict):
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "northbound", "result": "failed", "duration_ms": cost_ms}],
+                [err or "northbound failed"],
+            )
+        adapter_status = str(payload.get("status", "not_supported"))
+        has_daily_flow = bool(payload.get("daily_flow"))
+        if has_daily_flow:
+            northbound_status = "ok"
+        elif adapter_status == "not_supported":
+            northbound_status = "not_supported"
+        else:
+            northbound_status = "partial"
+
+        return self._build_fundamental_block(
+            northbound_status,
+            {
+                "daily_flow": payload.get("daily_flow", []),
+                "recent_5d_net": payload.get("recent_5d_net"),
+                "recent_10d_net": payload.get("recent_10d_net"),
+                "trend": payload.get("trend"),
+            },
+            self._normalize_source_chain(
+                payload.get("source_chain", []),
+                "northbound",
+                northbound_status,
+                cost_ms,
+            ),
+            list(payload.get("errors", [])) + ([err] if err else []),
+        )
+
+    def get_valuation_percentile_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
+        """估值百分位块（fail-open）。"""
+        from src.config import get_config
+
+        config = get_config()
+        stock_code = normalize_stock_code(stock_code)
+        timeout = float(budget_seconds if budget_seconds is not None else config.fundamental_fetch_timeout_seconds)
+        if _market_tag(stock_code) != "cn" or _is_etf_code(stock_code):
+            return self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "valuation_percentile", "result": "not_supported", "duration_ms": 0}],
+                ["not supported"],
+            )
+        if timeout <= 0:
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "valuation_percentile", "result": "failed", "duration_ms": 0}],
+                ["fundamental stage timeout"],
+            )
+        lookback_years = int(getattr(config, "valuation_percentile_lookback_years", 5))
+        payload, err, cost_ms = self._run_with_retry(
+            lambda: self._fundamental_adapter.get_valuation_percentile(stock_code, lookback_years),
+            timeout,
+            "valuation_percentile",
+        )
+        if not isinstance(payload, dict):
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "valuation_percentile", "result": "failed", "duration_ms": cost_ms}],
+                [err or "valuation_percentile failed"],
+            )
+        adapter_status = str(payload.get("status", "not_supported"))
+        has_percentile = payload.get("pe_percentile") is not None
+        if has_percentile:
+            vp_status = "ok"
+        elif adapter_status == "not_supported":
+            vp_status = "not_supported"
+        else:
+            vp_status = "partial"
+
+        return self._build_fundamental_block(
+            vp_status,
+            {
+                "pe_percentile": payload.get("pe_percentile"),
+                "pb_percentile": payload.get("pb_percentile"),
+                "pe_current": payload.get("pe_current"),
+                "pb_current": payload.get("pb_current"),
+                "pe_min": payload.get("pe_min"),
+                "pe_max": payload.get("pe_max"),
+                "pe_median": payload.get("pe_median"),
+                "valuation_level": payload.get("valuation_level"),
+                "data_points": payload.get("data_points", 0),
+            },
+            self._normalize_source_chain(
+                payload.get("source_chain", []),
+                "valuation_percentile",
+                vp_status,
+                cost_ms,
+            ),
+            list(payload.get("errors", [])) + ([err] if err else []),
         )
 
     def _get_sector_rankings_with_meta(

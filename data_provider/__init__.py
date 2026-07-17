@@ -17,6 +17,7 @@
 4. PytdxFetcher (Priority 2) - 来自 pytdx 库（通达信）
 5. BaostockFetcher (Priority 3) - 来自 baostock 库
 6. YfinanceFetcher (Priority 4) - 来自 yfinance 库
+7. SinaFetcher (Priority 5) - 新浪财经
 
 【未配置 TUSHARE_TOKEN 时】
 1. EfinanceFetcher (Priority 0) - 最高优先级，来自 efinance 库
@@ -26,6 +27,7 @@
 5. BaostockFetcher (Priority 3) - 来自 baostock 库
 6. YfinanceFetcher (Priority 4) - 来自 yfinance 库
 7. LongbridgeFetcher (Priority 5) - 长桥 OpenAPI（美股/港股兜底）
+8. SinaFetcher (Priority 5) - 新浪财经（A股/港股/美股）
 
 提示：优先级数字越小越优先，同优先级按初始化顺序排列
 """
@@ -41,6 +43,7 @@ from .yfinance_fetcher import YfinanceFetcher
 from .longbridge_fetcher import LongbridgeFetcher
 from .finnhub_fetcher import FinnhubFetcher
 from .alphavantage_fetcher import AlphaVantageFetcher
+from .sina_fetcher import SinaFetcher
 from .us_index_mapping import is_us_index_code, is_us_stock_code, get_us_index_yf_symbol, US_INDEX_MAPPING
 
 __all__ = [
@@ -56,6 +59,7 @@ __all__ = [
     'LongbridgeFetcher',
     'FinnhubFetcher',
     'AlphaVantageFetcher',
+    'SinaFetcher',
     'is_us_index_code',
     'is_us_stock_code',
     'is_hk_stock_code',
