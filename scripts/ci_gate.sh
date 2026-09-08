@@ -26,11 +26,18 @@ offline_test_suite() {
   python -m pytest -m "not network"
 }
 
+size_report() {
+  # Advisory only: the script always exits 0 and never blocks the gate.
+  echo "==> backend-gate: source file size report"
+  python scripts/check_file_sizes.py
+}
+
 run_all() {
   syntax_check
   flake8_checks
   deterministic_checks
   offline_test_suite
+  size_report
   echo "==> backend-gate: all checks passed"
 }
 
@@ -52,8 +59,11 @@ case "$phase" in
   offline-tests)
     offline_test_suite
     ;;
+  size-report)
+    size_report
+    ;;
   *)
-    echo "Usage: $0 [all|syntax|flake8|deterministic|offline-tests]" >&2
+    echo "Usage: $0 [all|syntax|flake8|deterministic|offline-tests|size-report]" >&2
     exit 2
     ;;
 esac

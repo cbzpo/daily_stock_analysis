@@ -75,6 +75,9 @@ jobs:
         run: ./scripts/ci_gate.sh deterministic
       - name: ✅ Offline test suite
         run: ./scripts/ci_gate.sh offline-tests
+      - name: 📊 Source file size report (advisory, non-blocking)
+        run: ./scripts/ci_gate.sh size-report
+        continue-on-error: true
 
   docker-build:
     name: docker-build

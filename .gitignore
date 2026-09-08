@@ -67,6 +67,11 @@ reports/
 .DS_Store
 Thumbs.db
 
+# 备份与补丁残留
+*.bak
+*.orig
+*.rej
+
 # 测试
 .pytest_cache/
 .coverage

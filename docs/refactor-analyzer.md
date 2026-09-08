@@ -79,7 +79,7 @@
 ## 迁移步骤
 
 ### 阶段1：准备（不修改代码）
-1. 备份 `src/analyzer.py` → `src/analyzer.py.bak` ✅
+1. ~~备份 `src/analyzer.py` → `src/analyzer.py.bak`~~（已在 P0 清理中删除，git 历史可回溯）
 2. 创建 `docs/refactor-analyzer.md` ✅
 3. 运行现有测试确保基准通过
 
