@@ -21,6 +21,27 @@
 
 </div>
 
+---
+
+## 🍴 关于本 Fork
+
+本仓库 fork 自 [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis)（MIT License，版权归原作者所有），在此之上做了以下增强：
+
+| 模块 | 说明 |
+|------|------|
+| 🐂🐻 多空辩论 Agent | `src/agent/agents/bull_agent.py`、`bear_agent.py`：对立视角交叉论证，削弱单边叙事偏差 |
+| ✅ 输出质量门 | `src/agent/quality_gate.py`：报告落库前做一致性与完整性校验，拦截残缺输出 |
+| 📊 决策仪表盘归一化 | `src/agent/dashboard_normalizer.py` + `src/agent/prompts/dashboard_schema.json`：统一多模型输出结构 |
+| ⏱️ 超时预算 | `src/agent/timeout.py`：给 LLM 调用加预算护栏 |
+| 🧪 回测风控引擎 | `src/backtest/risk_engine.py` |
+| 💼 组合分析健壮性 | 快照 / 风控接口超时提升到 90s（冷重建实测约 33s，原 30s 默认值必然超时）；API 默认只监听 `127.0.0.1`，可用 `API_HOST` / `API_PORT` 覆盖 |
+| 📈 数据补充 | `data_provider/bond_fetcher.py`、`fund_fetcher.py`：债券与基金数据 |
+| 🖥️ Web 通用组件 | `Table` / `Tabs` / `RiskPanel`（`apps/dsa-web/src/components/`） |
+
+上游通用问题请反馈到 [原仓库](https://github.com/ZhuLinsen/daily_stock_analysis/issues)；本 Fork 特有的改动可在本仓库提交 Issue。
+
+---
+
 ## 💖 赞助商 (Sponsors)
 <div align="center">
   <p align="center">
