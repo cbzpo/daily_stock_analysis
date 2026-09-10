@@ -1613,7 +1613,20 @@ class AkshareFetcher(BaseFetcher):
             import time as _time
             api_start = _time.time()
             
-            df = ak.stock_cyq_em(symbol=stock_code)
+            # RemoteDisconnected 等网络错误重试 2 次
+            df = None
+            last_err = None
+            for _attempt in range(3):
+                try:
+                    df = ak.stock_cyq_em(symbol=stock_code)
+                    break
+                except Exception as retry_err:
+                    last_err = retry_err
+                    if _attempt < 2:
+                        logger.warning(f"[API重试] 筹码分布第 {_attempt + 1} 次失败: {retry_err}, 2s 后重试")
+                        _time.sleep(2)
+            if df is None:
+                raise last_err or RuntimeError("筹码分布获取失败")
             
             api_elapsed = _time.time() - api_start
             

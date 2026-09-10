@@ -1734,6 +1734,9 @@ class AnalysisResult:
     # ========== 基本面上下文（仅运行时，用于通知拼装；不持久化到 to_dict）==========
     fundamental_context: Optional[Dict[str, Any]] = None
 
+    # ========== 风险分析（Trade-level Risk Management）==========
+    risk_profile: Optional[Dict[str, Any]] = None  # ATR-based risk profile
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -1772,6 +1775,7 @@ class AnalysisResult:
             'current_price': self.current_price,
             'change_pct': self.change_pct,
             'model_used': self.model_used,
+            'risk_profile': self.risk_profile,
         }
 
     def get_core_conclusion(self) -> str:
@@ -3878,6 +3882,59 @@ class GeminiAnalyzer:
 | 资金流出靠前板块 | {bottom_sector_text} | 板块风险参考 |
 
 > 资金流向只能作为价格位置的过滤器：接近压力且主力流出时不得追买；接近支撑且未放量跌破时，优先判断为持有观察、震荡或洗盘观察。
+"""
+
+        # 添加北向资金动向（A 股外资风向标）
+        northbound_block = (
+            fundamental_context.get("northbound", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        northbound_data = (
+            northbound_block.get("data", {})
+            if isinstance(northbound_block, dict)
+            else {}
+        )
+        if northbound_data.get("daily_flow"):
+            recent_5d = northbound_data.get("recent_5d_net", "N/A")
+            recent_10d = northbound_data.get("recent_10d_net", "N/A")
+            trend = northbound_data.get("trend", "N/A")
+            prompt += f"""
+### 北向资金动向（外资风向标）
+| 指标 | 数值 | 决策含义 |
+|------|------|----------|
+| 近5日累计净流入 | {recent_5d} | 正值=外资持续买入偏支持 |
+| 近10日累计净流入 | {recent_10d} | 中线资金方向参考 |
+| 趋势 | {trend} | 连续流入=偏多，连续流出=偏空 |
+
+> 北向资金是 A 股最透明的外资动向指标：持续净流入通常偏多，持续净流出需警惕。结合个股所属行业板块的北向资金偏好判断。
+"""
+
+        # 添加估值百分位分析（历史对比）
+        valuation_block = (
+            fundamental_context.get("valuation", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        valuation_percentile = (
+            valuation_block.get("percentile", {})
+            if isinstance(valuation_block, dict)
+            else {}
+        )
+        if valuation_percentile.get("status") == "ok" and valuation_percentile.get("pe_percentile") is not None:
+            pe_pct = valuation_percentile.get('pe_percentile', 'N/A')
+            pb_pct = valuation_percentile.get('pb_percentile', 'N/A')
+            level = valuation_percentile.get('valuation_level', 'N/A')
+            prompt += f"""
+### 估值百分位分析（历史对比）
+| 指标 | 当前值 | 历史百分位 | 历史区间 |
+|------|--------|------------|----------|
+| PE(动态) | {valuation_percentile.get('pe_current', 'N/A')} | **{pe_pct}%** | {valuation_percentile.get('pe_min', 'N/A')} ~ {valuation_percentile.get('pe_max', 'N/A')} |
+| PB | {valuation_percentile.get('pb_current', 'N/A')} | **{pb_pct}%** | |
+| 中位数 PE | {valuation_percentile.get('pe_median', 'N/A')} | | |
+| 估值水平 | **{level}** | | |
+
+> 估值百分位含义：≤30%=低估（有安全边际），30%-70%=合理，>70%=高估（需谨慎）。数据基于近 5 年历史 PE/PB 计算。
 """
 
         # 添加三大法人动向（台股筹码过滤器）— tw-only；仅当 institution 区块 status='ok'

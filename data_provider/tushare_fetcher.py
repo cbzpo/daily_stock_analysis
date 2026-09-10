@@ -75,7 +75,7 @@ def _is_us_code(stock_code: str) -> bool:
 class _TushareHttpClient:
     """Lightweight Tushare Pro client that does not require the tushare SDK."""
 
-    def __init__(self, token: str, timeout: int = 30, api_url: str = "http://api.tushare.pro") -> None:
+    def __init__(self, token: str, timeout: int = 30, api_url: str = "https://api.tushare.pro") -> None:
         self._token = token
         self._timeout = timeout
         self._api_url = api_url

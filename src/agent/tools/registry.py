@@ -5,10 +5,8 @@ Tool Registry for the Agent framework.
 Provides:
 - ToolParameter / ToolDefinition dataclasses
 - ToolRegistry: central tool registry with multi-provider schema generation
-- @tool decorator for easy tool registration
 """
 
-import json
 import inspect
 import logging
 from dataclasses import dataclass, field
@@ -288,11 +286,31 @@ class ToolRegistry:
         return tool_def.handler(**kwargs)
 
 
+def filter_tool_registry(
+    source: ToolRegistry,
+    tool_names: List[str],
+    agent_name: str = "",
+) -> ToolRegistry:
+    """Return a new ToolRegistry containing only tools listed in *tool_names*.
+
+    This is a standalone utility used by BaseAgent and ResearchAgent to
+    restrict the available tool set per agent.  Tools not found in the
+    source registry are logged as warnings.
+    """
+    filtered = ToolRegistry()
+    for name in tool_names:
+        tool_def = source.get(name)
+        if tool_def:
+            filtered.register(tool_def)
+        else:
+            logger.warning("[%s] requested tool '%s' not found in registry", agent_name, name)
+    return filtered
+
+
 # ============================================================
-# @tool decorator
+# Global default registry (singleton pattern)
 # ============================================================
 
-# Global default registry (singleton pattern)
 _default_registry: Optional[ToolRegistry] = None
 
 
@@ -302,100 +320,3 @@ def get_default_registry() -> ToolRegistry:
     if _default_registry is None:
         _default_registry = ToolRegistry()
     return _default_registry
-
-
-def tool(
-    name: str,
-    description: str,
-    category: str = "data",
-    parameters: Optional[List[ToolParameter]] = None,
-    registry: Optional[ToolRegistry] = None,
-    policy: Optional[ToolPolicy] = None,
-):
-    """Decorator to register a function as an agent tool.
-
-    Parameters can be specified explicitly or inferred from type hints.
-
-    Example::
-
-        @tool(name="get_realtime_quote", category="data",
-              description="Get real-time stock quote")
-        def get_realtime_quote(stock_code: str) -> dict:
-            ...
-    """
-    def decorator(func: Callable) -> Callable:
-        # Infer parameters from type hints if not provided
-        params = parameters
-        if params is None:
-            params = _infer_parameters(func)
-
-        tool_def = ToolDefinition(
-            name=name,
-            description=description,
-            parameters=params,
-            handler=func,
-            category=category,
-            policy=policy or ToolPolicy.unknown(),
-        )
-
-        target_registry = registry or get_default_registry()
-        target_registry.register(tool_def)
-
-        # Attach metadata to function for introspection
-        func._tool_definition = tool_def
-        return func
-
-    return decorator
-
-
-def _infer_parameters(func: Callable) -> List[ToolParameter]:
-    """Infer ToolParameter list from function signature and type hints."""
-    sig = inspect.signature(func)
-    hints = getattr(func, '__annotations__', {})
-    params: List[ToolParameter] = []
-
-    type_map = {
-        str: "string",
-        int: "integer",
-        float: "number",
-        bool: "boolean",
-        list: "array",
-        dict: "object",
-    }
-
-    for param_name, param in sig.parameters.items():
-        if param_name in ("self", "cls"):
-            continue
-        # Skip return annotation
-        hint = hints.get(param_name, str)
-        # Handle Optional and other typing constructs
-        origin = getattr(hint, '__origin__', None)
-        if origin is not None:
-            # Optional[X] -> X, List[X] -> array, etc.
-            args = getattr(hint, '__args__', ())
-            if origin is list or (hasattr(origin, '__name__') and origin.__name__ == 'List'):
-                param_type = "array"
-            elif origin is dict:
-                param_type = "object"
-            else:
-                # Union/Optional - use first non-None arg
-                for a in args:
-                    if a is not type(None):
-                        param_type = type_map.get(a, "string")
-                        break
-                else:
-                    param_type = "string"
-        else:
-            param_type = type_map.get(hint, "string")
-
-        has_default = param.default is not inspect.Parameter.empty
-        tp = ToolParameter(
-            name=param_name,
-            type=param_type,
-            description=f"Parameter: {param_name}",
-            required=not has_default,
-            default=param.default if has_default else None,
-        )
-        params.append(tp)
-
-    return params

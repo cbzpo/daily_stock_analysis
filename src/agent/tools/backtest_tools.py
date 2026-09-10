@@ -134,7 +134,7 @@ get_skill_backtest_summary_tool = ToolDefinition(
         ),
     ],
     handler=_handle_get_skill_backtest_summary,
-    category="data",
+    category="analysis",
     policy=_BACKTEST_GLOBAL_READ_POLICY,
 )
 
@@ -154,7 +154,7 @@ get_strategy_backtest_summary_tool = ToolDefinition(
         ),
     ],
     handler=_handle_get_overall_backtest_summary,
-    category="data",
+    category="analysis",
     policy=_BACKTEST_GLOBAL_READ_POLICY,
 )
 
@@ -244,7 +244,7 @@ get_stock_backtest_summary_tool = ToolDefinition(
         ),
     ],
     handler=_handle_get_stock_backtest_summary,
-    category="data",
+    category="analysis",
     policy=_BACKTEST_READ_POLICY,
 )
 

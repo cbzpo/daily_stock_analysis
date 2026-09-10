@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.stream_events import stream_event
+from src.agent.timeout import remaining_timeout_seconds
 from src.agent.tools.registry import ToolRegistry
 from src.agent.tools.execution import (
     _build_tool_cache_key,
@@ -50,12 +51,6 @@ __all__ = [
     "run_agent_loop",
     "serialize_tool_result",
     "try_parse_json",
-    "_build_tool_cache_key",
-    "_guard_tool_stock_scope",
-    "_is_non_retriable_tool_result",
-    "_is_stock_scoped_tool",
-    "_normalize_guard_stock_code",
-    "_normalize_tool_stock_code",
 ]
 
 # Tool name → friendly label for progress messages
@@ -126,7 +121,7 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
     json_blocks = re.findall(r"```(?:json)?\s*\n?(.*?)\n?```", content, re.DOTALL)
     if json_blocks:
         for block in json_blocks:
-            parsed = _try_parse_json(block)
+            parsed = try_parse_json(block)
             if parsed is not None:
                 normalize_report_signal_attribution(parsed)
                 return parsed
@@ -136,7 +131,7 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
                 return parsed
 
     # Strategy 2: raw parse
-    parsed = _try_parse_json(content)
+    parsed = try_parse_json(content)
     if parsed is not None:
         normalize_report_signal_attribution(parsed)
         return parsed
@@ -152,7 +147,7 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
     brace_end = content.rfind("}")
     if brace_start >= 0 and brace_end > brace_start:
         candidate = content[brace_start : brace_end + 1]
-        parsed = _try_parse_json(candidate)
+        parsed = try_parse_json(candidate)
         if parsed is not None:
             normalize_report_signal_attribution(parsed)
             return parsed
@@ -233,10 +228,6 @@ def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-# Keep private alias used internally by parse_dashboard_json
-_try_parse_json = try_parse_json
-
-
 def _try_repair_json(text: str, repair_fn: Callable) -> Optional[Dict[str, Any]]:
     try:
         repaired = repair_fn(text)
@@ -251,9 +242,7 @@ def _remaining_timeout_seconds(
     max_wall_clock_seconds: Optional[float],
 ) -> Optional[float]:
     """Return remaining wall-clock budget in seconds, or None when disabled."""
-    if max_wall_clock_seconds is None or max_wall_clock_seconds <= 0:
-        return None
-    return max(0.0, float(max_wall_clock_seconds) - (time.time() - start_time))
+    return remaining_timeout_seconds(start_time, max_wall_clock_seconds)
 
 
 def _build_timeout_result(
@@ -267,7 +256,7 @@ def _build_timeout_result(
     models_used: List[str],
     messages: List[Dict[str, Any]],
 ) -> RunLoopResult:
-    elapsed = time.time() - start_time
+    elapsed = time.monotonic() - start_time
     return RunLoopResult(
         success=False,
         content="",
@@ -293,7 +282,7 @@ def _build_budget_guard_result(
     remaining_timeout_s: float,
     min_step_budget_s: float,
 ) -> RunLoopResult:
-    elapsed = time.time() - start_time
+    elapsed = time.monotonic() - start_time
     return RunLoopResult(
         success=False,
         content="",
@@ -354,7 +343,7 @@ def run_agent_loop(
     labels = thinking_labels or _THINKING_TOOL_LABELS
     tool_decls = tool_registry.to_openai_tools()
 
-    start_time = time.time()
+    start_time = time.monotonic()
     tool_calls_log: List[Dict[str, Any]] = []
     non_retriable_tool_results: Dict[str, str] = {}
     total_tokens = 0
@@ -375,7 +364,7 @@ def run_agent_loop(
                     "stage_done",
                     stage="agent_loop",
                     status="completed" if result.success else "failed",
-                    duration=round(time.time() - start_time, 2),
+                    duration=round(time.monotonic() - start_time, 2),
                 )
             )
         return result
@@ -553,7 +542,7 @@ def run_agent_loop(
             logger.info(
                 "Agent completed in %d steps (%.1fs, %d tokens)",
                 step + 1,
-                time.time() - start_time,
+                time.monotonic() - start_time,
                 total_tokens,
             )
             if progress_callback:
@@ -618,6 +607,27 @@ def _execute_tools(
 
     results: List[Dict[str, Any]] = []
 
+    def _build_log_entry(tc_item, result_str, success, dur, cached, guard_result, step, tool_wait_timeout_seconds=None):
+        entry = {
+            "step": step, "tool": tc_item.name, "arguments": tc_item.arguments,
+            "success": success, "duration": dur, "result_length": len(result_str),
+            "cached": cached,
+        }
+        if tool_wait_timeout_seconds and tool_wait_timeout_seconds > 0 and not success:
+            try:
+                if json.loads(result_str).get("timeout") is True:
+                    entry["timeout"] = True
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        if guard_result is not None:
+            entry.update({
+                "guarded": True,
+                "expected_stock_code": guard_result.get("expected_stock_code"),
+                "requested_stock_code": guard_result.get("requested_stock_code"),
+                "allowed_stock_codes": guard_result.get("allowed_stock_codes", []),
+            })
+        return entry
+
     if len(tool_calls) == 1:
         tc = tool_calls[0]
         if progress_callback:
@@ -649,25 +659,7 @@ def _execute_tools(
             _, result_str, success, dur, cached, guard_result = _exec_single(tc)
         if progress_callback:
             progress_callback(stream_event("tool_done", step=step, tool=tc.name, success=success, duration=dur))
-        log_entry = {
-            "step": step, "tool": tc.name, "arguments": tc.arguments,
-            "success": success, "duration": dur, "result_length": len(result_str),
-            "cached": cached,
-        }
-        if tool_wait_timeout_seconds and tool_wait_timeout_seconds > 0 and not success:
-            try:
-                if json.loads(result_str).get("timeout") is True:
-                    log_entry["timeout"] = True
-            except (TypeError, ValueError, json.JSONDecodeError):
-                pass
-        if guard_result is not None:
-            log_entry.update({
-                "guarded": True,
-                "expected_stock_code": guard_result.get("expected_stock_code"),
-                "requested_stock_code": guard_result.get("requested_stock_code"),
-                "allowed_stock_codes": guard_result.get("allowed_stock_codes", []),
-            })
-        tool_calls_log.append(log_entry)
+        tool_calls_log.append(_build_log_entry(tc, result_str, success, dur, cached, guard_result, step, tool_wait_timeout_seconds))
         results.append({"tc": tc, "result_str": result_str})
     else:
         for tc in tool_calls:
@@ -687,19 +679,7 @@ def _execute_tools(
                 tc_item, result_str, success, dur, cached, guard_result = future.result()
                 if progress_callback:
                     progress_callback(stream_event("tool_done", step=step, tool=tc_item.name, success=success, duration=dur))
-                log_entry = {
-                    "step": step, "tool": tc_item.name, "arguments": tc_item.arguments,
-                    "success": success, "duration": dur, "result_length": len(result_str),
-                    "cached": cached,
-                }
-                if guard_result is not None:
-                    log_entry.update({
-                        "guarded": True,
-                        "expected_stock_code": guard_result.get("expected_stock_code"),
-                        "requested_stock_code": guard_result.get("requested_stock_code"),
-                        "allowed_stock_codes": guard_result.get("allowed_stock_codes", []),
-                    })
-                tool_calls_log.append(log_entry)
+                tool_calls_log.append(_build_log_entry(tc_item, result_str, success, dur, cached, guard_result, step))
                 results.append({"tc": tc_item, "result_str": result_str})
         except FuturesTimeoutError:
             timeout_triggered = True
@@ -724,16 +704,9 @@ def _execute_tools(
                             success=False,
                             duration=round(tool_wait_timeout_seconds or 0.0, 2),
                         ))
-                    tool_calls_log.append({
-                        "step": step,
-                        "tool": tc_item.name,
-                        "arguments": tc_item.arguments,
-                        "success": False,
-                        "duration": round(tool_wait_timeout_seconds or 0.0, 2),
-                        "result_length": len(result_str),
-                        "cached": False,
-                        "timeout": True,
-                    })
+                    tool_calls_log.append(_build_log_entry(
+                        tc_item, result_str, False, round(tool_wait_timeout_seconds or 0.0, 2), False, None, step, tool_wait_timeout_seconds,
+                    ))
                     results.append({"tc": tc_item, "result_str": result_str})
         finally:
             pool.shutdown(wait=not timeout_triggered, cancel_futures=timeout_triggered)

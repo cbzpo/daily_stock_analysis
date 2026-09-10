@@ -33,11 +33,20 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from src.agent.chat_context import build_visible_chat_history
+from src.agent.dashboard_normalizer import (
+    normalize_dashboard_payload,
+    adjust_sentiment_score,
+    adjust_operation_advice,
+    first_non_empty_text,
+    truncate_text,
+)
 from src.agent.disagreement import build_agent_disagreement_summary
 from src.agent.llm_adapter import LLMToolAdapter
+from src.agent.quality_gate import DataQualityGate
 from src.agent.protocols import (
     AgentContext,
     AgentRunStats,
+    PipelineResult,
     StageResult,
     StageStatus,
     normalize_decision_signal,
@@ -60,20 +69,8 @@ VALID_MODES = ("quick", "standard", "full", "specialist")
 NON_CRITICAL_BASE_STAGES = frozenset({"intel", "risk"})
 
 
-@dataclass
-class OrchestratorResult:
-    """Unified result from a multi-agent pipeline run."""
-
-    success: bool = False
-    content: str = ""
-    dashboard: Optional[Dict[str, Any]] = None
-    tool_calls_log: List[Dict[str, Any]] = field(default_factory=list)
-    total_steps: int = 0
-    total_tokens: int = 0
-    provider: str = ""
-    model: str = ""
-    error: Optional[str] = None
-    stats: Optional[AgentRunStats] = None
+# Backward-compatible alias — the canonical type lives in protocols.py
+OrchestratorResult = PipelineResult
 
 
 class AgentOrchestrator:
@@ -104,6 +101,11 @@ class AgentOrchestrator:
         self.mode = normalized_mode if normalized_mode in VALID_MODES else "standard"
         self.skill_manager = skill_manager
         self.config = config
+        self._quality_gate = DataQualityGate(
+            enabled=getattr(config, "data_quality_gate_enabled", True),
+            staleness_threshold_s=getattr(config, "data_quality_staleness_threshold_s", 300.0),
+            max_pct_change=getattr(config, "data_quality_max_pct_change", 20.0),
+        )
 
     def _get_timeout_seconds(self) -> int:
         """Return the pipeline timeout in seconds.
@@ -517,6 +519,30 @@ class AgentOrchestrator:
                     message=f"Starting {agent.agent_name} analysis...",
                 ))
 
+            # Run quality gate before data-dependent stages
+            if agent.agent_name in ("technical", "intel", "risk"):
+                check_chip = agent.agent_name == "technical"
+                qr = self._quality_gate.validate(
+                    ctx,
+                    stage_name=agent.agent_name,
+                    check_quote=True,
+                    check_history=True,
+                    check_chip=check_chip,
+                )
+                # If critical quality failure and stage is non-critical, skip it
+                if not qr.passed and agent.agent_name in NON_CRITICAL_BASE_STAGES:
+                    logger.warning(
+                        "[Orchestrator] skipping '%s' due to critical data quality failure",
+                        agent.agent_name,
+                    )
+                    stats.record_stage(StageResult(
+                        stage_name=agent.agent_name,
+                        status=StageStatus.SKIPPED,
+                        error="Data quality gate: critical failure",
+                    ))
+                    index += 1
+                    continue
+
             remaining_timeout_s = (
                 max(0.0, timeout_s - elapsed_s)
                 if timeout_s
@@ -636,6 +662,8 @@ class AgentOrchestrator:
         from src.agent.agents.intel_agent import IntelAgent
         from src.agent.agents.decision_agent import DecisionAgent
         from src.agent.agents.risk_agent import RiskAgent
+        from src.agent.agents.bull_agent import BullAgent
+        from src.agent.agents.bear_agent import BearAgent
 
         self._skill_agent_names = set()
 
@@ -649,6 +677,8 @@ class AgentOrchestrator:
         technical = self._prepare_agent(TechnicalAgent(**common_kwargs))
         intel = self._prepare_agent(IntelAgent(**common_kwargs))
         risk = self._prepare_agent(RiskAgent(**common_kwargs))
+        bull = self._prepare_agent(BullAgent(**common_kwargs))
+        bear = self._prepare_agent(BearAgent(**common_kwargs))
         decision = self._prepare_agent(DecisionAgent(**common_kwargs))
 
         if self.mode == "quick":
@@ -656,11 +686,11 @@ class AgentOrchestrator:
         elif self.mode == "standard":
             return [technical, intel, decision]
         elif self.mode == "full":
-            return [technical, intel, risk, decision]
+            return [technical, intel, risk, bull, bear, decision]
         elif self.mode == "specialist":
             # Specialist agents are inserted lazily right before the decision
             # stage so the router can see the finished technical opinion.
-            return [technical, intel, risk, decision]
+            return [technical, intel, risk, bull, bear, decision]
         else:
             return [technical, intel, decision]
 
@@ -905,213 +935,7 @@ class AgentOrchestrator:
         ctx: AgentContext,
     ) -> Optional[Dict[str, Any]]:
         """Normalize or synthesize the dashboard shape expected downstream."""
-        payload = dict(payload or {})
-        meaningful_data_keys = (
-            "realtime_quote",
-            "daily_history",
-            "chip_distribution",
-            "trend_result",
-            "news_context",
-            "intel_opinion",
-            "fundamental_context",
-        )
-        has_meaningful_context = any(ctx.get_data(key) is not None for key in meaningful_data_keys)
-        if not payload and not ctx.opinions and not has_meaningful_context:
-            return None
-
-        base_opinion = self._select_base_opinion(ctx)
-        decision_type = normalize_decision_signal(
-            payload.get("decision_type") or (base_opinion.signal if base_opinion else "hold")
-        )
-        confidence = float(base_opinion.confidence if base_opinion is not None else 0.5)
-        sentiment_score = payload.get("sentiment_score")
-        try:
-            sentiment_score = int(sentiment_score)
-        except (TypeError, ValueError):
-            sentiment_score = _estimate_sentiment_score(decision_type, confidence)
-
-        dashboard_block = payload.get("dashboard")
-        if not isinstance(dashboard_block, dict):
-            dashboard_block = {}
-        else:
-            dashboard_block = dict(dashboard_block)
-
-        core = dashboard_block.get("core_conclusion")
-        if not isinstance(core, dict):
-            core = {}
-        else:
-            core = dict(core)
-
-        intelligence = dashboard_block.get("intelligence")
-        if not isinstance(intelligence, dict):
-            intelligence = {}
-        else:
-            intelligence = dict(intelligence)
-
-        battle = dashboard_block.get("battle_plan")
-        if not isinstance(battle, dict):
-            battle = {}
-        else:
-            battle = dict(battle)
-
-        analysis_summary = _first_non_empty_text(
-            payload.get("analysis_summary"),
-            core.get("one_sentence"),
-            getattr(base_opinion, "reasoning", ""),
-        )
-        if not analysis_summary:
-            analysis_summary = f"多 Agent 未生成完整仪表盘，当前按{_signal_to_operation(decision_type)}处理。"
-        analysis_summary = _truncate_text(analysis_summary, 220)
-
-        trend_prediction = _first_non_empty_text(
-            payload.get("trend_prediction"),
-            (getattr(base_opinion, "raw_data", {}) or {}).get("trend_summary")
-            if base_opinion is not None else "",
-        )
-        if not trend_prediction:
-            technical = self._latest_opinion(ctx, {"technical"})
-            tech_raw = technical.raw_data if technical and isinstance(technical.raw_data, dict) else {}
-            ma_alignment = tech_raw.get("ma_alignment")
-            trend_score = tech_raw.get("trend_score")
-            if ma_alignment or trend_score is not None:
-                trend_prediction = f"技术面{ma_alignment or 'neutral'}，趋势评分 {trend_score if trend_score is not None else 'N/A'}"
-            else:
-                trend_prediction = "待结合更多阶段结果确认"
-
-        operation_advice_raw = payload.get("operation_advice")
-        operation_advice = _normalize_operation_advice_value(operation_advice_raw, decision_type)
-
-        existing_position = core.get("position_advice")
-        position_advice = dict(existing_position) if isinstance(existing_position, dict) else {}
-        if isinstance(operation_advice_raw, dict):
-            no_position = _first_non_empty_text(
-                operation_advice_raw.get("no_position"),
-                operation_advice_raw.get("empty_position"),
-            )
-            has_position = _first_non_empty_text(
-                operation_advice_raw.get("has_position"),
-                operation_advice_raw.get("holding_position"),
-            )
-            if no_position and "no_position" not in position_advice:
-                position_advice["no_position"] = no_position
-            if has_position and "has_position" not in position_advice:
-                position_advice["has_position"] = has_position
-        defaults = _default_position_advice(decision_type)
-        position_advice.setdefault("no_position", defaults["no_position"])
-        position_advice.setdefault("has_position", defaults["has_position"])
-
-        key_levels = self._collect_key_levels(ctx, payload, dashboard_block)
-        sniper = battle.get("sniper_points")
-        if not isinstance(sniper, dict):
-            sniper = {}
-        else:
-            sniper = dict(sniper)
-
-        ideal_buy = _pick_first_level(
-            sniper.get("ideal_buy"),
-            key_levels.get("ideal_buy_if_valuation_improves"),
-            key_levels.get("ideal_buy"),
-            key_levels.get("support"),
-            key_levels.get("immediate_support"),
-        )
-        sniper["ideal_buy"] = ideal_buy if ideal_buy is not None else "N/A"
-
-        secondary_buy = _coerce_level_value(sniper.get("secondary_buy"))
-        if secondary_buy is None:
-            secondary_buy = _pick_first_level(
-                key_levels.get("secondary_buy"),
-                key_levels.get("support"),
-                key_levels.get("immediate_support"),
-            )
-        if _level_values_equal(secondary_buy, sniper.get("ideal_buy")):
-            secondary_buy = None
-        sniper["secondary_buy"] = secondary_buy if secondary_buy is not None else "N/A"
-        sniper.setdefault(
-            "stop_loss",
-            key_levels.get("stop_loss")
-            or key_levels.get("strong_support_stop_loss")
-            or "待补充",
-        )
-        sniper.setdefault(
-            "take_profit",
-            key_levels.get("take_profit")
-            or key_levels.get("next_breakout_target")
-            or key_levels.get("current_resistance")
-            or key_levels.get("resistance")
-            or "N/A",
-        )
-
-        risk_alerts = self._collect_risk_alerts(ctx, intelligence)
-        positive_catalysts = self._collect_positive_catalysts(ctx, intelligence)
-        latest_news = _extract_latest_news_title(intelligence)
-
-        if not intelligence.get("risk_alerts"):
-            intelligence["risk_alerts"] = risk_alerts
-        if positive_catalysts and not intelligence.get("positive_catalysts"):
-            intelligence["positive_catalysts"] = positive_catalysts
-        if latest_news and not intelligence.get("latest_news"):
-            intelligence["latest_news"] = latest_news
-
-        if not core.get("one_sentence"):
-            core["one_sentence"] = _truncate_text(analysis_summary, 60)
-        if not core.get("time_sensitivity"):
-            core["time_sensitivity"] = "本周内"
-        if not core.get("signal_type"):
-            core["signal_type"] = _signal_to_signal_type(decision_type)
-        core["position_advice"] = position_advice
-
-        battle["sniper_points"] = sniper
-        if "action_checklist" not in battle:
-            battle["action_checklist"] = []
-        position_strategy = battle.get("position_strategy")
-        if not isinstance(position_strategy, dict) or not position_strategy:
-            battle["position_strategy"] = {
-                "suggested_position": _default_position_size(decision_type),
-                "entry_plan": position_advice["no_position"],
-                "risk_control": f"止损参考 {sniper.get('stop_loss', '待补充')}",
-            }
-
-        data_perspective = dashboard_block.get("data_perspective")
-        if not isinstance(data_perspective, dict):
-            data_perspective = {}
-        if not data_perspective:
-            built_data_perspective = self._build_data_perspective(ctx, key_levels)
-            if built_data_perspective:
-                data_perspective = built_data_perspective
-        if data_perspective:
-            dashboard_block["data_perspective"] = data_perspective
-
-        dashboard_block["core_conclusion"] = core
-        dashboard_block["intelligence"] = intelligence
-        dashboard_block["battle_plan"] = battle
-
-        key_points = payload.get("key_points")
-        if not isinstance(key_points, list) or not key_points:
-            key_points = [
-                _truncate_text(op.reasoning, 120)
-                for op in ctx.opinions
-                if isinstance(op.reasoning, str) and op.reasoning.strip()
-            ][:5]
-
-        risk_warning = _first_non_empty_text(
-            payload.get("risk_warning"),
-            "；".join(risk_alerts[:3]),
-            getattr(self._latest_opinion(ctx, {"risk"}), "reasoning", ""),
-        )
-        if not risk_warning:
-            risk_warning = "暂无额外风险提示"
-
-        payload["stock_name"] = _first_non_empty_text(payload.get("stock_name"), ctx.stock_name, ctx.stock_code)
-        payload["sentiment_score"] = sentiment_score
-        payload["trend_prediction"] = trend_prediction
-        payload["operation_advice"] = operation_advice
-        payload["decision_type"] = decision_type
-        payload["confidence_level"] = _confidence_label(confidence)
-        payload["analysis_summary"] = analysis_summary
-        payload["key_points"] = key_points
-        payload["risk_warning"] = risk_warning
-        payload["dashboard"] = dashboard_block
-        return payload
+        return normalize_dashboard_payload(payload, ctx)
 
     def _collect_key_levels(
         self,
@@ -1120,13 +944,15 @@ class AgentOrchestrator:
         dashboard_block: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Collect key price levels from dashboard payloads and agent opinions."""
+        from src.agent.dashboard_normalizer import coerce_level_value
+
         levels: Dict[str, Any] = {}
 
         def absorb(source: Any) -> None:
             if not isinstance(source, dict):
                 return
             for key, value in source.items():
-                normalized = _coerce_level_value(value)
+                normalized = coerce_level_value(value)
                 if normalized is not None and key not in levels:
                     levels[key] = normalized
 
@@ -1300,14 +1126,14 @@ class AgentOrchestrator:
         note: str,
     ) -> Dict[str, Any]:
         tagged = dict(dashboard)
-        summary = _first_non_empty_text(tagged.get("analysis_summary"))
+        summary = first_non_empty_text(tagged.get("analysis_summary"))
         prefix = "[降级结果] "
         if summary and not summary.startswith(prefix):
             tagged["analysis_summary"] = prefix + summary
         elif not summary:
             tagged["analysis_summary"] = prefix + note
 
-        warning = _first_non_empty_text(tagged.get("risk_warning"))
+        warning = first_non_empty_text(tagged.get("risk_warning"))
         tagged["risk_warning"] = f"{note} {warning}".strip() if warning else note
 
         nested = tagged.get("dashboard")
@@ -1316,7 +1142,7 @@ class AgentOrchestrator:
             core = nested.get("core_conclusion")
             if isinstance(core, dict):
                 core = dict(core)
-                one_sentence = _first_non_empty_text(core.get("one_sentence"), tagged.get("analysis_summary"))
+                one_sentence = first_non_empty_text(core.get("one_sentence"), tagged.get("analysis_summary"))
                 if one_sentence and not str(one_sentence).startswith(prefix):
                     core["one_sentence"] = prefix + str(one_sentence)
                 nested["core_conclusion"] = core
@@ -1361,11 +1187,11 @@ class AgentOrchestrator:
             score = int(sentiment_score)
         except (TypeError, ValueError):
             score = 50
-        dashboard["sentiment_score"] = _adjust_sentiment_score(score, new_signal)
+        dashboard["sentiment_score"] = adjust_sentiment_score(score, new_signal)
 
         operation_advice = dashboard.get("operation_advice")
         if isinstance(operation_advice, str):
-            dashboard["operation_advice"] = _adjust_operation_advice(operation_advice, new_signal)
+            dashboard["operation_advice"] = adjust_operation_advice(operation_advice, new_signal)
 
         summary = dashboard.get("analysis_summary")
         if isinstance(summary, str) and summary:
@@ -1519,159 +1345,4 @@ def _extract_stock_code(text: str) -> str:
         if _is_denied_ticker_candidate(candidate):
             continue
         return candidate
-    return ""
-
-
-def _adjust_sentiment_score(score: int, signal: str) -> int:
-    """Clamp sentiment score into the target band for the overridden signal."""
-    bands = {
-        "buy": (60, 79),
-        "hold": (40, 59),
-        "sell": (0, 39),
-    }
-    low, high = bands.get(signal, (0, 100))
-    return max(low, min(high, score))
-
-
-def _adjust_operation_advice(advice: str, signal: str) -> str:
-    """Normalize action wording to the overridden decision signal."""
-    mapping = {
-        "buy": "买入",
-        "hold": "观望",
-        "sell": "减仓/卖出",
-    }
-    if signal not in mapping:
-        return advice
-    if advice == mapping[signal]:
-        return advice
-    return f"{mapping[signal]}（原建议已被风控下调）"
-
-
-def _signal_to_operation(signal: str) -> str:
-    mapping = {
-        "buy": "买入",
-        "hold": "观望",
-        "sell": "减仓/卖出",
-    }
-    return mapping.get(signal, "观望")
-
-
-def _signal_to_signal_type(signal: str) -> str:
-    mapping = {
-        "buy": "🟢买入信号",
-        "hold": "⚪观望信号",
-        "sell": "🔴卖出信号",
-    }
-    return mapping.get(signal, "⚪观望信号")
-
-
-def _default_position_advice(signal: str) -> Dict[str, str]:
-    mapping = {
-        "buy": {
-            "no_position": "可结合支撑位分批试仓，避免一次性追高。",
-            "has_position": "可继续持有，回踩关键位不破再考虑加仓。",
-        },
-        "hold": {
-            "no_position": "暂不追高，等待更清晰的入场条件。",
-            "has_position": "以观察为主，跌破止损位再执行风控。",
-        },
-        "sell": {
-            "no_position": "暂不参与，等待风险充分释放。",
-            "has_position": "优先控制回撤，按计划减仓或离场。",
-        },
-    }
-    return mapping.get(signal, mapping["hold"])
-
-
-def _default_position_size(signal: str) -> str:
-    mapping = {
-        "buy": "轻仓试仓",
-        "hold": "控制仓位",
-        "sell": "降仓防守",
-    }
-    return mapping.get(signal, "控制仓位")
-
-
-def _normalize_operation_advice_value(value: Any, signal: str) -> str:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return _signal_to_operation(signal)
-
-
-def _confidence_label(confidence: float) -> str:
-    if confidence >= 0.75:
-        return "高"
-    if confidence >= 0.45:
-        return "中"
-    return "低"
-
-
-def _estimate_sentiment_score(signal: str, confidence: float) -> int:
-    confidence = max(0.0, min(1.0, float(confidence)))
-    bands = {
-        "buy": (65, 79),
-        "hold": (45, 59),
-        "sell": (20, 39),
-    }
-    low, high = bands.get(signal, (45, 59))
-    return int(round(low + (high - low) * confidence))
-
-
-def _coerce_level_value(value: Any) -> Any:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return round(float(value), 2)
-    text = str(value).replace(",", "").replace("，", "").strip()
-    if not text or text.upper() == "N/A" or text in {"-", "—"}:
-        return None
-    try:
-        return round(float(text), 2)
-    except ValueError:
-        return text
-
-
-def _pick_first_level(*values: Any) -> Any:
-    for value in values:
-        normalized = _coerce_level_value(value)
-        if normalized is not None:
-            return normalized
-    return None
-
-
-def _level_values_equal(left: Any, right: Any) -> bool:
-    left_normalized = _coerce_level_value(left)
-    right_normalized = _coerce_level_value(right)
-    return (
-        left_normalized is not None
-        and right_normalized is not None
-        and left_normalized == right_normalized
-    )
-
-
-def _first_non_empty_text(*values: Any) -> str:
-    for value in values:
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
-def _truncate_text(text: Any, limit: int) -> str:
-    value = str(text or "").strip()
-    if len(value) <= limit:
-        return value
-    return value[: max(0, limit - 1)].rstrip() + "…"
-
-
-def _extract_latest_news_title(intelligence: Dict[str, Any]) -> str:
-    key_news = intelligence.get("key_news")
-    if isinstance(key_news, list):
-        for item in key_news:
-            if isinstance(item, dict):
-                title = str(item.get("title", "")).strip()
-                if title:
-                    return title
-    latest_news = intelligence.get("latest_news")
-    if isinstance(latest_news, str) and latest_news.strip():
-        return latest_news.strip()
     return ""

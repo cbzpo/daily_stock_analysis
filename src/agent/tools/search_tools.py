@@ -29,8 +29,8 @@ _INTEL_READ_POLICY = ToolPolicy.declared(
 
 def _get_db():
     """Lazy import for DatabaseManager."""
-    from src.storage import get_db
-    return get_db()
+    from src.agent.tools.data_tools import _get_db as _get_db_impl
+    return _get_db_impl()
 
 
 def _get_search_service():

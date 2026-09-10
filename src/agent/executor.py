@@ -23,7 +23,9 @@ from typing import Any, Callable, Dict, List, Optional
 from src.config import get_config
 from src.agent.chat_context import build_agent_chat_context_bundle
 from src.agent.llm_adapter import LLMToolAdapter
+from src.agent.prompts import get_dashboard_schema_for_prompt
 from src.agent.provider_trace import extract_provider_trace_turns
+from src.agent.protocols import PipelineResult
 from src.agent.runner import run_agent_loop, parse_dashboard_json
 from src.agent.stock_scope import StockScope, resolve_stock_scope
 from src.storage import get_db
@@ -40,19 +42,8 @@ logger = logging.getLogger(__name__)
 # Agent result
 # ============================================================
 
-@dataclass
-class AgentResult:
-    """Result from an agent execution run."""
-    success: bool = False
-    content: str = ""                          # final text answer from agent
-    dashboard: Optional[Dict[str, Any]] = None  # parsed dashboard JSON
-    tool_calls_log: List[Dict[str, Any]] = field(default_factory=list)  # execution trace
-    total_steps: int = 0
-    total_tokens: int = 0
-    provider: str = ""
-    model: str = ""                            # comma-separated models used (supports fallback)
-    error: Optional[str] = None
-    messages: List[Dict[str, Any]] = field(default_factory=list)
+# Backward-compatible alias — the canonical type lives in protocols.py
+AgentResult = PipelineResult
 
 
 # ============================================================
@@ -549,6 +540,7 @@ class AgentExecutor:
             default_skill_policy_section=default_skill_policy_section,
             skills_section=skills_section,
             language_section=_build_language_section(report_language),
+            dashboard_schema=get_dashboard_schema_for_prompt(),
         )
 
         # Build tool declarations in OpenAI format (litellm handles all providers)

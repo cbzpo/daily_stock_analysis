@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.runner import RunLoopResult, run_agent_loop
+from src.agent.timeout import remaining_timeout_seconds, is_timed_out
 from src.agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -213,15 +214,12 @@ class ResearchAgent:
     @staticmethod
     def _remaining_timeout_seconds(started_at: float, timeout_seconds: Optional[float]) -> Optional[float]:
         """Return remaining overall time budget for the research task."""
-        if timeout_seconds is None:
-            return None
-        return max(0.0, float(timeout_seconds) - (time.monotonic() - started_at))
+        return remaining_timeout_seconds(started_at, timeout_seconds)
 
     @staticmethod
     def _is_timed_out(started_at: float, timeout_seconds: Optional[float]) -> bool:
         """Return whether the overall research deadline has been exceeded."""
-        remaining = ResearchAgent._remaining_timeout_seconds(started_at, timeout_seconds)
-        return remaining is not None and remaining <= 0
+        return is_timed_out(started_at, timeout_seconds)
 
     @staticmethod
     def _resolve_step_timeout(default_timeout: int, timeout_seconds: Optional[float]) -> Optional[int]:
@@ -460,13 +458,9 @@ Use Markdown formatting.  Be concise but thorough.
             return {"content": findings_text, "tokens": 0, "error": str(exc)}
 
     def _filtered_registry(self) -> ToolRegistry:
-        """Return a registry restricted to research-related tools.
-
-        Reuses the same filtering logic as :meth:`BaseAgent._filtered_registry`.
-        """
-        from src.agent.agents.base_agent import BaseAgent
-        # Borrow the shared implementation; it respects self.tool_names / self.tool_registry.
-        return BaseAgent._filtered_registry(self)
+        """Return a registry restricted to research-related tools."""
+        from src.agent.tools.registry import filter_tool_registry
+        return filter_tool_registry(self.tool_registry, self.tool_names or [], "research")
 
 
 @dataclass

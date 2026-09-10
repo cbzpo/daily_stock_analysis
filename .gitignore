@@ -93,3 +93,7 @@ static/
 /apps/dsa-desktop/dist/
 /apps/dsa-desktop/node_modules/
 docs/specs/
+
+# ignore local agent workspace artifacts (WorkBuddy / agent runtime state)
+.workbuddy/
+.agents/

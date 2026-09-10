@@ -110,6 +110,7 @@ export interface ReportSummary {
   trendPrediction: string;
   sentimentScore: number;
   sentimentLabel?: SentimentLabel;
+  riskProfile?: RiskProfile;
 }
 
 /** Strategy section */
@@ -118,6 +119,30 @@ export interface ReportStrategy {
   secondaryBuy?: string;
   stopLoss?: string;
   takeProfit?: string;
+}
+
+/** Risk profile from trade-level risk engine */
+export interface RiskProfile {
+  code?: string;
+  currentPrice?: number;
+  atr?: number;
+  atrPct?: number;
+  atrPeriod?: number;
+  suggestedShares?: number;
+  suggestedAmount?: number;
+  positionPct?: number;
+  stopLossPrice?: number;
+  stopLossPct?: number;
+  takeProfitPrice?: number;
+  takeProfitPct?: number;
+  riskRewardRatio?: number;
+  riskAmount?: number;
+  rewardAmount?: number;
+  volRegime?: string;
+  volScaleApplied?: boolean;
+  passRiskFilter?: boolean;
+  riskBlockReasons?: string[];
+  riskFiltered?: boolean;
 }
 
 export interface RelatedBoard {

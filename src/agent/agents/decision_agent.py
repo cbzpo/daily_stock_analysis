@@ -195,6 +195,64 @@ should sum to 100; all-zero means no effective signal and must not be faked.
                 parts.append(f"- [{rf.get('severity', 'medium')}] {rf.get('category', '')}: {rf.get('description', '')}")
             parts.append("")
 
+        # Feed data quality warnings
+        data_warnings = ctx.meta.get("data_warnings", [])
+        if data_warnings:
+            parts.append("## Data Quality Warnings")
+            for dw in data_warnings:
+                if isinstance(dw, dict):
+                    parts.append(f"- [{dw.get('severity', 'info')}] {dw.get('category', '')}: {dw.get('message', '')}")
+                elif isinstance(dw, str):
+                    parts.append(f"- {dw}")
+            parts.append("")
+            parts.append(
+                "IMPORTANT: Data quality warnings indicate potential data issues. "
+                "When confidence is high but warnings exist, reduce confidence by 10-20% "
+                "and mention the data quality concerns in your reasoning."
+            )
+            parts.append("")
+
+        # Feed debate results (Bull vs Bear)
+        bull_arg = ctx.get_data("bull_argument")
+        bear_arg = ctx.get_data("bear_argument")
+        if bull_arg or bear_arg:
+            parts.append("## Multi-Agent Debate Results")
+            parts.append("The following is an adversarial analysis from opposing analyst perspectives.")
+            parts.append("")
+
+            if bull_arg:
+                parts.append("### Bullish Position")
+                parts.append(f"**Thesis:** {bull_arg.get('thesis', 'N/A')}")
+                parts.append(f"**Conviction:** {bull_arg.get('conviction', 0)}/100")
+                parts.append("**Evidence:**")
+                for e in bull_arg.get("evidence", []):
+                    parts.append(f"- {e}")
+                if bull_arg.get("key_upside"):
+                    parts.append(f"**Key Upside:** {bull_arg['key_upside']}")
+                if bull_arg.get("risk_acknowledgment"):
+                    parts.append(f"**Risk Acknowledgment:** {bull_arg['risk_acknowledgment']}")
+                parts.append("")
+
+            if bear_arg:
+                parts.append("### Bearish Position")
+                parts.append(f"**Thesis:** {bear_arg.get('thesis', 'N/A')}")
+                parts.append(f"**Conviction:** {bear_arg.get('conviction', 0)}/100")
+                parts.append("**Evidence:**")
+                for e in bear_arg.get("evidence", []):
+                    parts.append(f"- {e}")
+                if bear_arg.get("key_downside"):
+                    parts.append(f"**Key Downside:** {bear_arg['key_downside']}")
+                if bear_arg.get("strength_acknowledgment"):
+                    parts.append(f"**Strength Acknowledgment:** {bear_arg['strength_acknowledgment']}")
+                parts.append("")
+
+            parts.append(
+                "IMPORTANT: Address the debate in your reasoning. Explain which side's "
+                "evidence you find more compelling and why. If you disagree with both, "
+                "explain your independent assessment."
+            )
+            parts.append("")
+
         disagreement_summary = ctx.meta.get("agent_disagreement_summary")
         if isinstance(disagreement_summary, dict) and disagreement_summary:
             parts.append("## Agent Disagreement Summary")

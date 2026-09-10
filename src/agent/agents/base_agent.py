@@ -28,6 +28,19 @@ from src.services.daily_market_context import format_daily_market_context_prompt
 logger = logging.getLogger(__name__)
 
 
+# Shared tool list for debate agents (Bull/Bear) — identical tool access
+DEBATE_AGENT_TOOL_NAMES = [
+    "get_realtime_quote",
+    "get_daily_history",
+    "analyze_trend",
+    "calculate_ma",
+    "get_volume_analysis",
+    "get_chip_distribution",
+    "search_stock_news",
+    "get_stock_info",
+]
+
+
 class BaseAgent(ABC):
     """Abstract base for all specialised agents.
 
@@ -233,15 +246,8 @@ class BaseAgent(ABC):
         if self.tool_names is None:
             return self.tool_registry
 
-        from src.agent.tools.registry import ToolRegistry as TR
-        filtered = TR()
-        for name in self.tool_names:
-            tool_def = self.tool_registry.get(name)
-            if tool_def:
-                filtered.register(tool_def)
-            else:
-                logger.warning("[%s] requested tool '%s' not found in registry", self.agent_name, name)
-        return filtered
+        from src.agent.tools.registry import filter_tool_registry
+        return filter_tool_registry(self.tool_registry, self.tool_names, self.agent_name)
 
     def _build_memory_context(self, ctx: AgentContext) -> str:
         """Summarise recent analysis history for prompt injection."""

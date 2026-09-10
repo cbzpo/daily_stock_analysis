@@ -3720,7 +3720,11 @@ class SearchService:
                         error_type=type(exc).__name__,
                         error_message=exc,
                     )
-                    raise
+                    logger.warning(
+                        "搜索提供商 %s 失败 (%s: %s)，尝试下一个",
+                        provider.name, type(exc).__name__, exc,
+                    )
+                    continue
                 filtered_response = self._filter_news_response(
                     response,
                     search_days=search_days,

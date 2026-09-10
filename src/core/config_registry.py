@@ -1197,6 +1197,58 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": ["cloud_deployments_may_disable"],
     },
+    "ENABLE_NORTHBOUND": {
+        "title": "Enable Northbound Flow",
+        "description": "Enable northbound capital flow analysis for A-share market. Shows daily net inflow from HK Stock Connect.",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 24,
+        "help_key": "settings.data_source.ENABLE_NORTHBOUND",
+        "examples": [
+            "ENABLE_NORTHBOUND=true",
+            "ENABLE_NORTHBOUND=false",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：数据源配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#数据源配置",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "ENABLE_VALUATION_PERCENTILE": {
+        "title": "Enable Valuation Percentile",
+        "description": "Enable valuation percentile analysis to compare current PE/PB against historical range (default 5 years).",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 25,
+        "help_key": "settings.data_source.ENABLE_VALUATION_PERCENTILE",
+        "examples": [
+            "ENABLE_VALUATION_PERCENTILE=true",
+            "ENABLE_VALUATION_PERCENTILE=false",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：数据源配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#数据源配置",
+            },
+        ],
+        "warning_codes": [],
+    },
     "NEWS_MAX_AGE_DAYS": {
         "title": "News Max Age (Days)",
         "description": "Maximum age of news in days. Older articles are excluded from analysis context.",
@@ -4941,7 +4993,7 @@ def _infer_category(key: str) -> str:
             "NEWS_",
             "BIAS_",
         )
-    ) or key in ("ENABLE_REALTIME_QUOTE", "ENABLE_CHIP_DISTRIBUTION"):
+    ) or key in ("ENABLE_REALTIME_QUOTE", "ENABLE_CHIP_DISTRIBUTION", "ENABLE_NORTHBOUND", "ENABLE_VALUATION_PERCENTILE", "ENABLE_FUNDAMENTAL_PIPELINE", "ENABLE_EASTMONEY_PATCH", "ENABLE_REALTIME_TECHNICAL_INDICATORS"):
         return "data_source"
     if key.startswith((
         "WECHAT",

@@ -19,7 +19,7 @@ import sys
 import time
 from typing import List, Optional, Tuple
 
-from src.config import Config, get_config
+from src.config import AIHUBMIX_APP_CODE, Config, get_config
 from src.llm.hermes import route_has_hermes
 
 logger = logging.getLogger(__name__)
@@ -272,7 +272,7 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
         if cfg.openai_base_url:
             call_kwargs["api_base"] = cfg.openai_base_url
         if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
-            call_kwargs["extra_headers"] = {"APP-Code": "GPIJ3886"}
+            call_kwargs["extra_headers"] = {"APP-Code": AIHUBMIX_APP_CODE}
 
     if getattr(litellm, "completion", None) is None:
         import litellm as litellm_module

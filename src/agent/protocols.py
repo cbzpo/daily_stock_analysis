@@ -234,3 +234,28 @@ class AgentRunStats:
             "total_duration_s": round(self.total_duration_s, 2),
             "models_used": self.models_used,
         }
+
+
+# ============================================================
+# PipelineResult — unified return type from agent execution
+# ============================================================
+
+@dataclass
+class PipelineResult:
+    """Result from an agent execution run (single-agent or multi-agent).
+
+    Used by both :class:`AgentExecutor` and :class:`AgentOrchestrator` as
+    their return type.  Callers should not care which path produced the result.
+    """
+
+    success: bool = False
+    content: str = ""
+    dashboard: Optional[Dict[str, Any]] = None
+    tool_calls_log: List[Dict[str, Any]] = field(default_factory=list)
+    total_steps: int = 0
+    total_tokens: int = 0
+    provider: str = ""
+    model: str = ""
+    error: Optional[str] = None
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    stats: Optional[AgentRunStats] = None

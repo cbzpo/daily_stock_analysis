@@ -1245,6 +1245,12 @@ class NotificationService(
             for result in sorted_results:
                 signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
                 dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
+                # Risk profile may be stored separately in result.risk_profile
+                risk_profile = None
+                if dashboard:
+                    risk_profile = dashboard.get('risk_profile')
+                if not risk_profile and hasattr(result, 'risk_profile') and result.risk_profile:
+                    risk_profile = result.risk_profile
 
                 # 股票名称（优先使用 dashboard 或 result 中的名称，转义 *ST 等特殊字符）
                 stock_name = self._get_display_name(result, report_language)
@@ -1420,6 +1426,27 @@ class NotificationService(
                             f"- {labels['risk_control_label']}: {position.get('risk_control', 'N/A')}",
                             "",
                         ])
+
+                    # 风险分析面板
+                    if risk_profile and risk_profile.get('pass_risk_filter') is not None:
+                        report_lines.extend([
+                            f"**🛡️ 风险分析**",
+                            "",
+                            f"| 指标 | 值 |",
+                            f"|------|-----|",
+                            f"| ATR | {risk_profile.get('atr', 0):.2f} ({risk_profile.get('atr_pct', 0)*100:.1f}%) |",
+                            f"| 建议仓位 | {risk_profile.get('suggested_shares', 0)} 股 ({risk_profile.get('position_pct', 0)*100:.1f}%) |",
+                            f"| 止损位 | {risk_profile.get('stop_loss_price', 0):.2f} (-{risk_profile.get('stop_loss_pct', 0)*100:.1f}%) |",
+                            f"| 止盈位 | {risk_profile.get('take_profit_price', 0):.2f} (+{risk_profile.get('take_profit_pct', 0)*100:.1f}%) |",
+                            f"| 风险收益比 | {risk_profile.get('risk_reward_ratio', 0):.2f} |",
+                            f"| 波动率状态 | {risk_profile.get('vol_regime', 'N/A')} |",
+                            f"| 风险过滤 | {'✅ 通过' if risk_profile.get('pass_risk_filter') else '❌ 未通过'} |",
+                            "",
+                        ])
+                        if risk_profile.get('risk_block_reasons'):
+                            report_lines.append(f"**⚠️ 风险拦截原因**: {'; '.join(risk_profile['risk_block_reasons'])}")
+                            report_lines.append("")
+
                     # 检查清单
                     checklist = battle.get('action_checklist', []) if battle else []
                     if checklist:

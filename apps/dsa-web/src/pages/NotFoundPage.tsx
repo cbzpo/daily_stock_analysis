@@ -17,7 +17,7 @@ const NotFoundPage: React.FC = () => {
         <span 
           className="text-8xl font-bold text-transparent bg-clip-text"
           style={{
-            backgroundImage: 'linear-gradient(135deg, #00d4ff 0%, #a855f7 100%)',
+            backgroundImage: 'linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--color-purple)) 100%)',
           }}
         >
           404

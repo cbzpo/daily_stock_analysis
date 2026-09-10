@@ -530,3 +530,211 @@ class AkshareFundamentalAdapter:
         result["status"] = "ok"
         result["source_chain"].append(f"dragon_tiger:{source}")
         return result
+
+    def get_northbound_flow(self, lookback_days: int = 20) -> Dict[str, Any]:
+        """
+        获取北向资金（沪深港通）每日净流入数据。
+        仅支持 A 股市场。
+        """
+        result: Dict[str, Any] = {
+            "status": "not_supported",
+            "daily_flow": [],
+            "recent_5d_net": None,
+            "recent_10d_net": None,
+            "trend": None,
+            "source_chain": [],
+            "errors": [],
+        }
+
+        try:
+            import akshare as ak
+        except Exception as exc:
+            result["errors"].append(f"import_akshare:{type(exc).__name__}")
+            return result
+
+        # 获取北向资金（沪股通+深股通）每日净流入
+        try:
+            # indicator="北向" 表示沪股通+深股通合计
+            df = ak.stock_hsgt_north_net_flow_in_em(indicator="北向")
+            if df is None or df.empty:
+                result["errors"].append("north_net_flow:empty")
+                return result
+        except Exception as exc:
+            result["errors"].append(f"stock_hsgt_north_net_flow_em:{type(exc).__name__}")
+            # 尝试备选 API
+            try:
+                df = ak.stock_hsgt_fund_flow_summary_em()
+                if df is None or df.empty:
+                    return result
+            except Exception as exc2:
+                result["errors"].append(f"stock_hsgt_fund_flow_summary_em:{type(exc2).__name__}")
+                return result
+
+        result["source_chain"].append("northbound:akshare")
+
+        # 解析 DataFrame
+        try:
+            # 标准化列名
+            date_col = next((c for c in df.columns if any(k in str(c) for k in ("日期", "date", "时间"))), None)
+            flow_col = next((c for c in df.columns if any(k in str(c) for k in ("净流入", "净买", "flow", "北向"))), None)
+            buy_col = next((c for c in df.columns if any(k in str(c) for k in ("买入", "buy"))), None)
+            sell_col = next((c for c in df.columns if any(k in str(c) for k in ("卖出", "sell"))), None)
+
+            if date_col is None or flow_col is None:
+                result["errors"].append("column_not_found")
+                return result
+
+            work_df = df.copy()
+            work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce")
+            work_df[flow_col] = pd.to_numeric(work_df[flow_col], errors="coerce")
+            work_df = work_df.dropna(subset=[date_col, flow_col])
+
+            # 按日期排序，取最近 N 日
+            work_df = work_df.sort_values(date_col, ascending=False).head(lookback_days)
+
+            # 构建每日数据
+            daily_flow = []
+            for _, row in work_df.iterrows():
+                entry = {
+                    "date": row[date_col].date().isoformat() if hasattr(row[date_col], "date") else str(row[date_col])[:10],
+                    "net_inflow": float(row[flow_col]),
+                }
+                if buy_col and buy_col in row.index:
+                    entry["buy_amount"] = _safe_float(row.get(buy_col))
+                if sell_col and sell_col in row.index:
+                    entry["sell_amount"] = _safe_float(row.get(sell_col))
+                daily_flow.append(entry)
+
+            result["daily_flow"] = daily_flow
+
+            # 计算近 5 日和 10 日累计净流入
+            net_values = [d["net_inflow"] for d in daily_flow if d.get("net_inflow") is not None]
+            if len(net_values) >= 5:
+                result["recent_5d_net"] = round(sum(net_values[:5]), 2)
+            if len(net_values) >= 10:
+                result["recent_10d_net"] = round(sum(net_values[:10]), 2)
+
+            # 判断趋势：近 5 日中 >=4 日为正 = 连续流入
+            if len(net_values) >= 5:
+                positive_count = sum(1 for v in net_values[:5] if v > 0)
+                negative_count = sum(1 for v in net_values[:5] if v < 0)
+                if positive_count >= 4:
+                    result["trend"] = "连续流入"
+                elif negative_count >= 4:
+                    result["trend"] = "连续流出"
+                else:
+                    result["trend"] = "震荡"
+
+            result["status"] = "ok"
+        except Exception as exc:
+            result["errors"].append(f"parse_northbound:{type(exc).__name__}")
+
+        return result
+
+    def get_valuation_percentile(
+        self, stock_code: str, lookback_years: int = 5
+    ) -> Dict[str, Any]:
+        """
+        计算当前 PE/PB 在近 N 年历史中的百分位。
+        仅支持 A 股市场。
+        """
+        result: Dict[str, Any] = {
+            "status": "not_supported",
+            "pe_percentile": None,
+            "pb_percentile": None,
+            "pe_current": None,
+            "pb_current": None,
+            "pe_min": None,
+            "pe_max": None,
+            "pe_median": None,
+            "valuation_level": None,
+            "data_points": 0,
+            "source_chain": [],
+            "errors": [],
+        }
+
+        try:
+            import akshare as ak
+        except Exception as exc:
+            result["errors"].append(f"import_akshare:{type(exc).__name__}")
+            return result
+
+        # 获取 A 股个股历史市盈率/市净率
+        try:
+            # stock_a_lg_indicator 返回历史 PE/PB 数据
+            # symbol 参数需要纯数字代码
+            code_clean = _normalize_code(stock_code)
+            df = ak.stock_a_lg_indicator(symbol=code_clean)
+            if df is None or df.empty:
+                result["errors"].append("stock_a_lg_indicator:empty")
+                return result
+        except Exception as exc:
+            result["errors"].append(f"stock_a_lg_indicator:{type(exc).__name__}")
+            return result
+
+        result["source_chain"].append("valuation_percentile:akshare")
+
+        try:
+            # 标准化列名
+            date_col = next((c for c in df.columns if any(k in str(c) for k in ("日期", "date", "trade_date"))), None)
+            pe_col = next((c for c in df.columns if any(k in str(c) for k in ("市盈率", "pe", "pe_ratio", "pe_ttm"))), None)
+            pb_col = next((c for c in df.columns if any(k in str(c) for k in ("市净率", "pb", "pb_ratio", "pb_mrq"))), None)
+
+            if date_col is None or pe_col is None:
+                result["errors"].append("column_not_found")
+                return result
+
+            work_df = df.copy()
+            work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce")
+            work_df[pe_col] = pd.to_numeric(work_df[pe_col], errors="coerce")
+
+            # 筛选近 N 年数据
+            cutoff_date = pd.Timestamp.now() - pd.DateOffset(years=lookback_years)
+            work_df = work_df[work_df[date_col] >= cutoff_date]
+            work_df = work_df.dropna(subset=[pe_col])
+
+            if len(work_df) < 10:
+                result["errors"].append("insufficient_data")
+                return result
+
+            result["data_points"] = len(work_df)
+
+            # 计算 PE 百分位
+            pe_values = work_df[pe_col].values
+            pe_current = float(pe_values[-1])  # 最新值
+            pe_sorted = sorted(pe_values)
+            pe_less_than_current = sum(1 for v in pe_sorted if v < pe_current)
+            pe_percentile = round((pe_less_than_current / len(pe_sorted)) * 100, 1)
+
+            result["pe_current"] = round(pe_current, 2)
+            result["pe_percentile"] = pe_percentile
+            result["pe_min"] = round(float(min(pe_values)), 2)
+            result["pe_max"] = round(float(max(pe_values)), 2)
+            result["pe_median"] = round(float(pd.Series(pe_values).median()), 2)
+
+            # 计算 PB 百分位（如果 PB 列存在）
+            if pb_col and pb_col in work_df.columns:
+                work_df[pb_col] = pd.to_numeric(work_df[pb_col], errors="coerce")
+                pb_valid = work_df.dropna(subset=[pb_col])
+                if len(pb_valid) >= 10:
+                    pb_values = pb_valid[pb_col].values
+                    pb_current = float(pb_values[-1])
+                    pb_sorted = sorted(pb_values)
+                    pb_less_than_current = sum(1 for v in pb_sorted if v < pb_current)
+                    pb_percentile = round((pb_less_than_current / len(pb_sorted)) * 100, 1)
+                    result["pb_current"] = round(pb_current, 2)
+                    result["pb_percentile"] = pb_percentile
+
+            # 判断估值水平（基于 PE 百分位）
+            if pe_percentile <= 30:
+                result["valuation_level"] = "低估"
+            elif pe_percentile <= 70:
+                result["valuation_level"] = "合理"
+            else:
+                result["valuation_level"] = "高估"
+
+            result["status"] = "ok"
+        except Exception as exc:
+            result["errors"].append(f"parse_valuation:{type(exc).__name__}")
+
+        return result

@@ -82,11 +82,19 @@ class DataPerspective(BaseModel):
 class Intelligence(BaseModel):
     """Intelligence block."""
 
-    latest_news: Optional[str] = None
+    latest_news: Optional[Union[str, List[str]]] = None
     risk_alerts: Optional[List[str]] = None
     positive_catalysts: Optional[List[str]] = None
     earnings_outlook: Optional[str] = None
     sentiment_summary: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_latest_news(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("latest_news"), list):
+            items = [str(x) for x in data["latest_news"] if x]
+            data["latest_news"] = "; ".join(items) if items else None
+        return data
 
 
 class SniperPoints(BaseModel):
@@ -216,6 +224,39 @@ class SignalAttribution(BaseModel):
         return self
 
 
+class RiskProfile(BaseModel):
+    """Quantitative risk profile for trade-level risk management."""
+
+    # ATR
+    atr: Optional[float] = None
+    atr_pct: Optional[float] = None
+    atr_period: Optional[int] = None
+
+    # Position sizing
+    suggested_shares: Optional[int] = None
+    suggested_amount: Optional[float] = None
+    position_pct: Optional[float] = None
+
+    # Stop-loss / Take-profit
+    stop_loss_price: Optional[float] = None
+    stop_loss_pct: Optional[float] = None
+    take_profit_price: Optional[float] = None
+    take_profit_pct: Optional[float] = None
+
+    # Risk-reward
+    risk_reward_ratio: Optional[float] = None
+    risk_amount: Optional[float] = None
+    reward_amount: Optional[float] = None
+
+    # Volatility regime
+    vol_regime: Optional[str] = None
+    vol_scale_applied: Optional[bool] = None
+
+    # Risk verdict
+    pass_risk_filter: Optional[bool] = None
+    risk_block_reasons: List[str] = Field(default_factory=list)
+
+
 class Dashboard(BaseModel):
     """Dashboard block."""
 
@@ -225,6 +266,7 @@ class Dashboard(BaseModel):
     battle_plan: Optional[BattlePlan] = None
     phase_decision: Optional[PhaseDecision] = None
     signal_attribution: Optional[SignalAttribution] = None
+    risk_profile: Optional[RiskProfile] = None
 
 
 class AnalysisReportSchema(BaseModel):

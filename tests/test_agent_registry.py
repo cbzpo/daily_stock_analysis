@@ -6,7 +6,6 @@ Covers:
 - Tool registration, lookup, listing, and removal
 - Multi-provider schema generation (Gemini / OpenAI / Anthropic)
 - Tool execution and error handling
-- @tool decorator with type-hint inference
 - SkillManager registration, activation, and prompt generation
 """
 
@@ -28,7 +27,6 @@ from src.agent.tools.registry import (
     ToolDefinition,
     ToolParameter,
     ToolPolicy,
-    _infer_parameters,
 )
 from src.agent.skills.base import Skill, SkillManager
 
@@ -249,63 +247,6 @@ class TestToolDefinitionSchemas(unittest.TestCase):
 
 
 # ============================================================
-# @tool decorator / _infer_parameters tests
-# ============================================================
-
-class TestInferParameters(unittest.TestCase):
-    """Test _infer_parameters from type hints."""
-
-    def test_basic_types(self):
-        def my_func(code: str, count: int, ratio: float, flag: bool):
-            pass
-
-        params = _infer_parameters(my_func)
-        self.assertEqual(len(params), 4)
-        type_map = {p.name: p.type for p in params}
-        self.assertEqual(type_map["code"], "string")
-        self.assertEqual(type_map["count"], "integer")
-        self.assertEqual(type_map["ratio"], "number")
-        self.assertEqual(type_map["flag"], "boolean")
-
-    def test_default_values(self):
-        def my_func(code: str, days: int = 30):
-            pass
-
-        params = _infer_parameters(my_func)
-        code_p = next(p for p in params if p.name == "code")
-        days_p = next(p for p in params if p.name == "days")
-        self.assertTrue(code_p.required)
-        self.assertFalse(days_p.required)
-        self.assertEqual(days_p.default, 30)
-
-    def test_list_type(self):
-        from typing import List
-
-        def my_func(items: List[str]):
-            pass
-
-        params = _infer_parameters(my_func)
-        self.assertEqual(params[0].type, "array")
-
-    def test_dict_type(self):
-        from typing import Dict
-
-        def my_func(data: Dict[str, int]):
-            pass
-
-        params = _infer_parameters(my_func)
-        self.assertEqual(params[0].type, "object")
-
-    def test_skip_self(self):
-        def my_func(self, code: str):
-            pass
-
-        params = _infer_parameters(my_func)
-        self.assertEqual(len(params), 1)
-        self.assertEqual(params[0].name, "code")
-
-
-# ============================================================
 # SkillManager Tests
 # ============================================================
 
@@ -472,7 +413,7 @@ class TestBuiltinToolDefinitions(unittest.TestCase):
         self.assertIn("get_stock_backtest_summary", names)
         for td in ALL_BACKTEST_TOOLS:
             self.assertIsInstance(td, ToolDefinition)
-            self.assertEqual(td.category, "data")
+            self.assertEqual(td.category, "analysis")
 
     def test_skill_backtest_tool_reports_specific_skill_as_unsupported_until_persisted(self):
         from src.agent.tools.backtest_tools import _handle_get_skill_backtest_summary

@@ -2,10 +2,10 @@
 """
 Agent tools package.
 
-Provides ToolRegistry, @tool decorator, and wrapped tools
+Provides ToolRegistry, ToolDefinition, and wrapped tools
 for the stock analysis agent.
 """
 
-from src.agent.tools.registry import ToolRegistry, ToolDefinition, ToolParameter, ToolPolicy, tool
+from src.agent.tools.registry import ToolRegistry, ToolDefinition, ToolParameter, ToolPolicy
 
-__all__ = ["ToolRegistry", "ToolDefinition", "ToolParameter", "ToolPolicy", "tool"]
+__all__ = ["ToolRegistry", "ToolDefinition", "ToolParameter", "ToolPolicy"]

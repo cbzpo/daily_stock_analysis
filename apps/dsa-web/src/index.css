@@ -42,6 +42,7 @@
   --border: 217 28% 84%;
   --input: 217 28% 84%;
   --ring: 193 100% 43%;
+  --on-primary-ink: 228 35% 8%;
   --radius: 1rem;
   --elevated: 0 0% 100%;
   --hover: 214 29% 90%;
@@ -238,7 +239,7 @@
 
   /* Chat UI Tokens (Light) */
   --chat-avatar-user-bg: hsl(var(--primary) / 0.5 );
-  --chat-avatar-user-fg: #041118;
+  --chat-avatar-user-fg: hsl(var(--on-primary-ink));
   --chat-avatar-user-border: hsl(var(--primary) / 0.3);
   --chat-avatar-ai-bg: hsl(var(--primary) / 0.1);
   --chat-avatar-ai-fg: hsl(var(--foreground)/ 0.8 );
@@ -321,6 +322,7 @@
   --border: 226 19% 20%;
   --input: 226 19% 20%;
   --ring: 190 100% 50%;
+  --on-primary-ink: 228 35% 8%;
   --elevated: 230 22% 12%;
   --hover: 231 20% 16%;
   --secondary-text: 228 16% 72%;
@@ -497,7 +499,7 @@
   --input-surface-focus-ring: 0 0 0 4px hsl(var(--primary) / 0.18);
   --settings-input-rest-border: hsl(var(--border) / 0.58);
   --gradient-primary:
-    linear-gradient(135deg, rgba(0, 212, 255, 0.96), rgba(0, 168, 204, 0.96));
+    linear-gradient(135deg, hsl(var(--primary) / 0.96), hsl(var(--primary) / 0.74));
 
   /* Chat UI Tokens (Dark) */
   --chat-avatar-user-bg: hsl(var(--primary) / 0.8);
@@ -787,24 +789,24 @@
 }
 
 .badge-cyan {
-  background: rgba(0, 212, 255, 0.15);
+  background: hsl(var(--primary) / 0.15);
   color: var(--color-cyan);
-  border: 1px solid rgba(0, 212, 255, 0.3);
+  border: 1px solid hsl(var(--primary) / 0.3);
 }
 
 .badge-purple {
-  background: rgba(168, 85, 247, 0.15);
+  background: hsl(var(--color-purple) / 0.15);
   color: var(--color-purple);
-  border: 1px solid rgba(168, 85, 247, 0.3);
+  border: 1px solid hsl(var(--color-purple) / 0.3);
 }
 
 .badge-success {
-  background: rgba(0, 255, 136, 0.1);
+  background: hsl(var(--color-success) / 0.12);
   color: var(--color-success);
 }
 
 .badge-danger {
-  background: rgba(255, 68, 102, 0.1);
+  background: hsl(var(--color-danger) / 0.12);
   color: var(--color-danger);
 }
 
@@ -1069,6 +1071,12 @@
 
 .border-subtle-hover:hover {
   border-color: var(--border-subtle-hover);
+}
+
+/* Reusable focus ring (token-driven) */
+.focus-ring {
+  outline: none;
+  box-shadow: 0 0 0 4px hsl(var(--primary) / 0.18);
 }
 
 /* Glow utilities */
@@ -1971,20 +1979,20 @@ textarea {
 }
 
 .btn-primary {
-  border: 1px solid rgba(0, 212, 255, 0.26);
+  border: 1px solid hsl(var(--primary) / 0.26);
   background: linear-gradient(
     135deg,
-    rgba(0, 212, 255, 0.96),
-    rgba(0, 168, 204, 0.96)
+    hsl(var(--primary) / 0.96),
+    hsl(var(--primary) / 0.74)
   );
-  color: #041118;
-  box-shadow: 0 12px 28px rgba(0, 212, 255, 0.2);
+  color: hsl(var(--on-primary-ink));
+  box-shadow: 0 12px 28px hsl(var(--primary) / 0.2);
 }
 
 .btn-primary:hover {
   transform: translateY(-1px);
   filter: brightness(1.04);
-  box-shadow: 0 18px 34px rgba(0, 212, 255, 0.22);
+  box-shadow: 0 18px 34px hsl(var(--primary) / 0.22);
 }
 
 .btn-secondary {
@@ -2030,7 +2038,7 @@ textarea {
 :root:not(.dark) .portfolio-page .btn-primary:hover:not(:disabled) {
   box-shadow:
     inset 0 1px 0 hsl(0 0% 100% / 0.18),
-    0 18px 34px rgba(0, 212, 255, 0.22);
+    0 18px 34px hsl(var(--primary) / 0.22);
 }
 
 .bg-hover {

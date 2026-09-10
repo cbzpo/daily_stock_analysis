@@ -251,8 +251,16 @@ def execute_runner_tool_call(
     tool_registry: ToolRegistry,
     stock_scope: Any = None,
     non_retriable_tool_results: Optional[Dict[str, str]] = None,
+    enforce_policy: bool = False,
+    read_only: bool = False,
 ) -> tuple[Any, str, bool, float, bool, Optional[Dict[str, Any]]]:
-    """Execute a single tool call using the legacy runner semantics."""
+    """Execute a single tool call using the legacy runner semantics.
+
+    Args:
+        enforce_policy: When True, check tool policy before execution.
+        read_only: When True (and enforce_policy=True), reject tools with
+            ``policy.read_only=False``.
+    """
     t0 = time.time()
     cache_key = _build_tool_cache_key(tool_call.name, tool_call.arguments)
     guard_result = _guard_tool_stock_scope(tool_registry, tool_call.name, tool_call.arguments, stock_scope)
@@ -269,6 +277,35 @@ def execute_runner_tool_call(
             guard_result.get("allowed_stock_codes"),
         )
         return tool_call, result_str, False, dur, False, guard_result
+
+    # --- Tool policy enforcement (opt-in) ---
+    if enforce_policy:
+        tool_def = tool_registry.resolve(tool_call.name)
+        if tool_def is not None:
+            policy = tool_def.policy
+            # Reject non-read-only tools in read-only mode
+            if read_only and policy.read_only is False:
+                dur = round(time.time() - t0, 2)
+                block_result = {
+                    "error": "policy_violation",
+                    "message": f"Tool '{tool_call.name}' is not read-only and cannot run in read-only mode.",
+                    "retriable": False,
+                }
+                result_str = serialize_tool_result(block_result)
+                if cache_key and non_retriable_tool_results is not None:
+                    non_retriable_tool_results[cache_key] = result_str
+                logger.warning(
+                    "Tool '%s' blocked by policy: read_only=False in read-only mode",
+                    tool_call.name,
+                )
+                return tool_call, result_str, False, dur, False, block_result
+            # Log side effects at WARNING level
+            if policy.side_effects:
+                logger.info(
+                    "Tool '%s' has side_effects: %s",
+                    tool_call.name,
+                    ", ".join(policy.side_effects),
+                )
 
     if cache_key and non_retriable_tool_results is not None and cache_key in non_retriable_tool_results:
         dur = round(time.time() - t0, 2)

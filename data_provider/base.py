@@ -629,6 +629,8 @@ class DataFetcherManager:
         "FinnhubFetcher": {"us"},
         "AlphaVantageFetcher": {"us"},
         "SinaFetcher": {"cn"},
+        "BondFetcher": {"cn_bond"},
+        "FundFetcher": {"cn_fund"},
     }
     _daily_source_health = CircuitBreaker(failure_threshold=3, cooldown_seconds=300.0)
     _CONCEPT_RANKINGS_CACHE_TTL_SECONDS = 300.0
@@ -1168,6 +1170,8 @@ class DataFetcherManager:
         from .yfinance_fetcher import YfinanceFetcher
         from .longbridge_fetcher import LongbridgeFetcher
         from .sina_fetcher import SinaFetcher
+        from .bond_fetcher import BondFetcher
+        from .fund_fetcher import FundFetcher
         config = get_config()
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
@@ -1177,6 +1181,8 @@ class DataFetcherManager:
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
         sina = SinaFetcher()         # 新浪财经数据源
+        bond = BondFetcher()         # 可转债数据源
+        fund = FundFetcher()         # 基金/ETF数据源
         optional_fetchers: List[BaseFetcher] = []
 
         tushare_token = (getattr(config, "tushare_token", None) or "").strip()
@@ -1229,6 +1235,8 @@ class DataFetcherManager:
                 baostock,
                 yfinance,
                 sina,
+                bond,
+                fund,
                 *optional_fetchers,
             ]
 
@@ -1278,6 +1286,8 @@ class DataFetcherManager:
             DataFetchError: 所有数据源都失败时抛出
         """
         from .us_index_mapping import is_us_index_code, is_us_stock_code
+        from .bond_fetcher import is_convertible_bond
+        from .fund_fetcher import is_etf
 
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
@@ -1285,6 +1295,40 @@ class DataFetcherManager:
         fetchers = self._get_fetchers_snapshot()
         errors = []
         request_start = time.time()
+
+        # 快速路径：可转债使用专用数据源路由
+        is_bond = is_convertible_bond(stock_code)
+        if is_bond:
+            # 可转债使用 BondFetcher
+            for fetcher in fetchers:
+                if fetcher.name == "BondFetcher":
+                    try:
+                        logger.info(f"[数据源尝试] [BondFetcher] 可转债 {stock_code} 路由...")
+                        result = fetcher.get_daily_data(stock_code, start_date, end_date, days)
+                        elapsed = time.time() - request_start
+                        logger.info(f"[数据源成功] [BondFetcher] 可转债 {stock_code}: elapsed={elapsed:.2f}s")
+                        return result, "BondFetcher"
+                    except Exception as e:
+                        errors.append(f"[BondFetcher] {stock_code}: {e}")
+                        logger.warning(f"[数据源失败] [BondFetcher] {stock_code}: {e}")
+            # 如果 BondFetcher 失败，继续尝试其他数据源
+
+        # 快速路径：ETF使用专用数据源路由
+        is_etf_code = is_etf(stock_code)
+        if is_etf_code:
+            # ETF使用 FundFetcher
+            for fetcher in fetchers:
+                if fetcher.name == "FundFetcher":
+                    try:
+                        logger.info(f"[数据源尝试] [FundFetcher] ETF {stock_code} 路由...")
+                        result = fetcher.get_daily_data(stock_code, start_date, end_date, days)
+                        elapsed = time.time() - request_start
+                        logger.info(f"[数据源成功] [FundFetcher] ETF {stock_code}: elapsed={elapsed:.2f}s")
+                        return result, "FundFetcher"
+                    except Exception as e:
+                        errors.append(f"[FundFetcher] {stock_code}: {e}")
+                        logger.warning(f"[数据源失败] [FundFetcher] {stock_code}: {e}")
+            # 如果 FundFetcher 失败，继续尝试其他数据源
 
         # 快速路径：美股使用专用数据源路由；港股先过滤不支持港股日线的数据源
         #   - 配置长桥凭据后: Longbridge 为首选, YFinance/AkShare 兜底

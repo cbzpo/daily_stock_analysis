@@ -108,6 +108,7 @@ TICKFLOW_KLINE_ADJUST_VALUES = {"none", "forward", "backward", "forward_additive
 # These are compatibility examples; actual availability should be validated by Anspire console/model entitlement.
 ANSPIRE_LLM_BASE_URL_DEFAULT = "https://open-gateway.anspire.cn/v6"
 ANSPIRE_LLM_MODEL_DEFAULT = "Doubao-Seed-2.0-lite"
+AIHUBMIX_APP_CODE = os.getenv("AIHUBMIX_APP_CODE", "GPIJ3886")
 
 
 def _has_ntfy_topic_endpoint(value: Optional[str]) -> bool:
@@ -868,6 +869,11 @@ class Config:
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
 
+    # === 数据质量门配置 ===
+    data_quality_gate_enabled: bool = True  # Enable data quality validation before each pipeline stage
+    data_quality_staleness_threshold_s: float = 300.0  # Max staleness for realtime quotes (seconds)
+    data_quality_max_pct_change: float = 20.0  # Max allowed pct_chg (A-share ±20% limit)
+
     # === 通知配置（可同时配置多个，全部推送）===
     
     # 企业微信 Webhook
@@ -1069,6 +1075,14 @@ class Config:
     # 基本面缓存最大条目数（避免长时间运行内存增长）
     fundamental_cache_max_entries: int = 256
 
+    # === 北向资金与估值分位数（A 股专用） ===
+    # 启用北向资金流向分析（沪深港通每日净流入）
+    enable_northbound: bool = True
+    # 启用估值百分位分析（当前 PE/PB 在近 N 年历史中的百分位）
+    enable_valuation_percentile: bool = True
+    # 估值分位数回溯年数（默认 5 年）
+    valuation_percentile_lookback_years: int = 5
+
     # === Portfolio PR2: import/risk/fx settings ===
     portfolio_risk_concentration_alert_pct: float = 35.0
     portfolio_risk_drawdown_alert_pct: float = 15.0
@@ -1076,6 +1090,15 @@ class Config:
     portfolio_risk_stop_loss_near_ratio: float = 0.8
     portfolio_risk_lookback_days: int = 180
     portfolio_fx_update_enabled: bool = True
+
+    # === Trade-level Risk Engine ===
+    total_capital: float = 1_000_000.0        # Total trading capital for position sizing
+    risk_per_trade: float = 0.01              # Max loss per trade as % of capital (1%)
+    max_position_pct: float = 0.20            # Max single-stock weight (20%)
+    atr_period: int = 14                      # ATR lookback period
+    atr_sl_multiplier: float = 2.0            # Stop-loss = entry - ATR * multiplier
+    atr_tp_multiplier: float = 3.0            # Take-profit = entry + ATR * multiplier
+    min_rr_ratio: float = 2.0                 # Minimum R:R to keep signal active
 
     # Discord 机器人状态
     discord_bot_status: str = "A股智能分析 | /help"
@@ -2053,6 +2076,14 @@ class Config:
                 field_name='FUNDAMENTAL_CACHE_MAX_ENTRIES',
                 minimum=1,
             ),
+            enable_northbound=os.getenv('ENABLE_NORTHBOUND', 'true').lower() == 'true',
+            enable_valuation_percentile=os.getenv('ENABLE_VALUATION_PERCENTILE', 'true').lower() == 'true',
+            valuation_percentile_lookback_years=parse_env_int(
+                os.getenv('VALUATION_PERCENTILE_LOOKBACK_YEARS'),
+                5,
+                field_name='VALUATION_PERCENTILE_LOOKBACK_YEARS',
+                minimum=1,
+            ),
             portfolio_risk_concentration_alert_pct=parse_env_float(
                 os.getenv('PORTFOLIO_RISK_CONCENTRATION_ALERT_PCT'),
                 35.0,
@@ -2084,6 +2115,50 @@ class Config:
                 minimum=1,
             ),
             portfolio_fx_update_enabled=os.getenv('PORTFOLIO_FX_UPDATE_ENABLED', 'true').lower() == 'true',
+            total_capital=parse_env_float(
+                os.getenv('TOTAL_CAPITAL'),
+                1_000_000.0,
+                field_name='TOTAL_CAPITAL',
+                minimum=0.0,
+            ),
+            risk_per_trade=parse_env_float(
+                os.getenv('RISK_PER_TRADE'),
+                0.01,
+                field_name='RISK_PER_TRADE',
+                minimum=0.0,
+                maximum=0.1,
+            ),
+            max_position_pct=parse_env_float(
+                os.getenv('MAX_POSITION_PCT'),
+                0.20,
+                field_name='MAX_POSITION_PCT',
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            atr_period=parse_env_int(
+                os.getenv('ATR_PERIOD'),
+                14,
+                field_name='ATR_PERIOD',
+                minimum=1,
+            ),
+            atr_sl_multiplier=parse_env_float(
+                os.getenv('ATR_SL_MULTIPLIER'),
+                2.0,
+                field_name='ATR_SL_MULTIPLIER',
+                minimum=0.5,
+            ),
+            atr_tp_multiplier=parse_env_float(
+                os.getenv('ATR_TP_MULTIPLIER'),
+                3.0,
+                field_name='ATR_TP_MULTIPLIER',
+                minimum=0.5,
+            ),
+            min_rr_ratio=parse_env_float(
+                os.getenv('MIN_RR_RATIO'),
+                2.0,
+                field_name='MIN_RR_RATIO',
+                minimum=0.0,
+            ),
             alphasift_enabled=parse_env_bool(os.getenv('ALPHASIFT_ENABLED'), default=False),
             alphasift_install_spec=(
                 DEFAULT_ALPHASIFT_INSTALL_SPEC
@@ -2310,7 +2385,7 @@ class Config:
                     # Auto-inject aihubmix sponsored header
                     headers = dict(ch.get('extra_headers') or {})
                     if ch['base_url'] and 'aihubmix.com' in ch['base_url']:
-                        headers.setdefault('APP-Code', 'GPIJ3886')
+                        headers.setdefault('APP-Code', AIHUBMIX_APP_CODE)
                     if headers:
                         litellm_params['extra_headers'] = headers
 
@@ -2371,7 +2446,7 @@ class Config:
                 if openai_base_url:
                     params['api_base'] = openai_base_url
                 if openai_base_url and 'aihubmix.com' in openai_base_url:
-                    params['extra_headers'] = {'APP-Code': 'GPIJ3886'}
+                    params['extra_headers'] = {'APP-Code': AIHUBMIX_APP_CODE}
                 model_list.append({
                     'model_name': '__legacy_openai__',
                     'litellm_params': params,
@@ -3410,7 +3485,7 @@ def extra_litellm_params(model: str, config: Config) -> Dict[str, Any]:
         if config.openai_base_url:
             params["api_base"] = config.openai_base_url
         if config.openai_base_url and "aihubmix.com" in config.openai_base_url:
-            params["extra_headers"] = {"APP-Code": "GPIJ3886"}
+            params["extra_headers"] = {"APP-Code": AIHUBMIX_APP_CODE}
     return params
 
 

@@ -23,6 +23,12 @@ import type {
   PortfolioTradeListResponse,
 } from '../types/portfolio';
 
+// Snapshot/risk rebuild replays every missing daily snapshot and fetches live quotes
+// plus sector data for each holding. A cold rebuild after new trades or a snapshot
+// purge measured ~33s, well past the 30s global axios timeout, so these two calls
+// need their own budget.
+const PORTFOLIO_SNAPSHOT_TIMEOUT_MS = 90_000;
+
 type SnapshotQuery = {
   accountId?: number;
   asOf?: string;
@@ -132,6 +138,7 @@ export const portfolioApi = {
   async getSnapshot(query: SnapshotQuery = {}): Promise<PortfolioSnapshotResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/portfolio/snapshot', {
       params: buildSnapshotParams(query),
+      timeout: PORTFOLIO_SNAPSHOT_TIMEOUT_MS,
     });
     return toCamelCase<PortfolioSnapshotResponse>(response.data);
   },
@@ -151,6 +158,7 @@ export const portfolioApi = {
   async getRisk(query: SnapshotQuery = {}): Promise<PortfolioRiskResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/portfolio/risk', {
       params: buildSnapshotParams(query),
+      timeout: PORTFOLIO_SNAPSHOT_TIMEOUT_MS,
     });
     return toCamelCase<PortfolioRiskResponse>(response.data);
   },

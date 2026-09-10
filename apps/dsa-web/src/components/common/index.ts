@@ -3,6 +3,8 @@ export * from './Card';
 export * from './Checkbox';
 export * from './AppPage';
 export * from './SectionCard';
+export * from './Table';
+export * from './Tabs';
 export * from './StatCard';
 export * from './EmptyState';
 export * from './InlineAlert';

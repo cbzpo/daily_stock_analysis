@@ -891,6 +891,12 @@ class LLMToolAdapter:
         # DeepSeek/Qwen thinking mode; not in standard OpenAI type, accessed via getattr
         reasoning_content = getattr(choice.message, "reasoning_content", None)
 
+        # Agnes-2.0-flash returns empty content and puts response in reasoning_content
+        # Fall back to reasoning_content when content is empty
+        if not text_content and reasoning_content:
+            text_content = reasoning_content
+            reasoning_content = None
+
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
                 args: Dict[str, Any] = {}

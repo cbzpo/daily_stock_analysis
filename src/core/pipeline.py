@@ -28,6 +28,7 @@ from src.storage import get_db
 from data_provider import DataFetcherManager
 from data_provider.base import is_bse_code, normalize_stock_code
 from data_provider.realtime_types import ChipDistribution
+from src.backtest.risk_engine import RiskEngine, RiskConfig
 from src.analyzer import (
     GeminiAnalyzer,
     AnalysisResult,
@@ -778,6 +779,54 @@ class StockAnalysisPipeline:
                     previous_operation_advice=action_source_advice,
                 )
 
+            # Step 7.8: Compute risk profile
+            if result and result.success and result.current_price:
+                try:
+                    risk_config = RiskConfig(
+                        risk_per_trade=float(getattr(self.config, 'risk_per_trade', 0.01)),
+                        max_position_pct=float(getattr(self.config, 'max_position_pct', 0.20)),
+                        atr_period=int(getattr(self.config, 'atr_period', 14)),
+                        atr_sl_multiplier=float(getattr(self.config, 'atr_sl_multiplier', 2.0)),
+                        atr_tp_multiplier=float(getattr(self.config, 'atr_tp_multiplier', 3.0)),
+                        min_rr_ratio=float(getattr(self.config, 'min_rr_ratio', 2.0)),
+                    )
+                    risk_engine = RiskEngine(
+                        total_capital=float(getattr(self.config, 'total_capital', 1_000_000)),
+                        config=risk_config,
+                    )
+                    # Build OHLCV DataFrame from context
+                    ohlcv_df = self._build_ohlcv_df_from_context(context, enhanced_context)
+                    risk_profile = risk_engine.compute_risk_profile(
+                        code=code,
+                        current_price=result.current_price,
+                        df=ohlcv_df,
+                        signal=getattr(result, 'decision_type', 'hold'),
+                    )
+                    result.risk_profile = risk_profile.to_dict()
+                    logger.info(
+                        "%s(%s) Risk profile: R:R=%.2f, SL=%.2f%%, TP=%.2f%%, vol=%s",
+                        stock_name, code,
+                        risk_profile.risk_reward_ratio,
+                        risk_profile.stop_loss_pct * 100,
+                        risk_profile.take_profit_pct * 100,
+                        risk_profile.vol_regime,
+                    )
+                    # Risk filter: downgrade buy to hold when R:R below threshold
+                    if not risk_profile.pass_risk_filter:
+                        current_decision = getattr(result, 'decision_type', 'hold')
+                        if current_decision in ('buy', 'strong_buy'):
+                            logger.warning(
+                                "%s(%s) Risk filter: downgrading %s -> hold (R:R=%.2f < %.2f)",
+                                stock_name, code, current_decision,
+                                risk_profile.risk_reward_ratio,
+                                risk_config.min_rr_ratio,
+                            )
+                            result.decision_type = 'hold'
+                            result.operation_advice = '持有观察'
+                            result.risk_profile['risk_filtered'] = True
+                except Exception as e:
+                    logger.warning("%s(%s) Risk profile computation failed: %s", stock_name, code, e)
+
             # Step 8: 保存分析历史记录
             if result and result.success:
                 try:
@@ -835,7 +884,41 @@ class StockAnalysisPipeline:
             logger.error(f"{stock_name}({code}) 分析失败: {e}")
             logger.exception(f"{stock_name}({code}) 详细错误信息:")
             return None
-    
+
+    def _build_ohlcv_df_from_context(
+        self,
+        context: Dict[str, Any],
+        enhanced_context: Dict[str, Any],
+    ) -> Optional[pd.DataFrame]:
+        """Build OHLCV DataFrame from analysis context for risk engine."""
+        try:
+            history = context.get("history") or enhanced_context.get("history")
+            if not history or not isinstance(history, list):
+                return None
+
+            rows = []
+            for bar in history:
+                if not isinstance(bar, dict):
+                    continue
+                row = {
+                    "date": bar.get("date"),
+                    "open": float(bar.get("open", 0) or 0),
+                    "high": float(bar.get("high", 0) or 0),
+                    "low": float(bar.get("low", 0) or 0),
+                    "close": float(bar.get("close", 0) or 0),
+                    "volume": float(bar.get("volume", 0) or 0),
+                }
+                if row["close"] > 0:
+                    rows.append(row)
+
+            if not rows:
+                return None
+
+            df = pd.DataFrame(rows)
+            return df
+        except Exception:
+            return None
+
     def _enhance_context(
         self,
         context: Dict[str, Any],
